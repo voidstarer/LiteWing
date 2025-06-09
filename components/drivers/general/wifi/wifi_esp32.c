@@ -64,6 +64,7 @@ static uint8_t calculate_cksum(void *data, size_t len)
     return cksum;
 }
 
+#ifdef DRONE_IN_AP_MODE
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
 {
@@ -76,6 +77,24 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         DEBUG_PRINT_LOCAL("station" MACSTR "leave, AID=%d", MAC2STR(event->mac), event->aid);
     }
 }
+#else
+static void wifi_event_handler(void *arg, esp_event_base_t event_base,
+                               int32_t event_id, void *event_data)
+{
+    if (event_base == WIFI_EVENT) {
+        if (event_id == WIFI_EVENT_STA_START) {
+            esp_wifi_connect();
+        } else if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
+            DEBUG_PRINT_LOCAL("Wi-Fi disconnected. Reconnecting...");
+            esp_wifi_connect();  // retry
+        }
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *) event_data;
+        esp_ip4_addr_t ip = event->ip_info.ip;
+        DEBUG_PRINT_LOCAL("Connected. Got IP: " IPSTR, IP2STR(&ip));
+    }
+}
+#endif
 
 bool wifiTest(void)
 {
@@ -249,6 +268,7 @@ static void app_espnow_event_handler(void *handler_args, esp_event_base_t base, 
     }
 }
 
+#ifdef DRONE_IN_AP_MODE
 void wifiInit(void)
 {
     if (isInit) {
@@ -323,3 +343,73 @@ void wifiInit(void)
     xTaskCreate(udp_server_rx_task, UDP_RX_TASK_NAME, UDP_RX_TASK_STACKSIZE, NULL, UDP_RX_TASK_PRI, NULL);
     isInit = true;
 }
+#else
+void wifiInit(void)
+{
+    if (isInit) {
+        return;
+    }
+    // This should probably be reduced to a CRTP packet size
+    udpDataRx = xQueueCreate(16, sizeof(UDPPacket));
+    DEBUG_QUEUE_MONITOR_REGISTER(udpDataRx);
+    udpDataTx = xQueueCreate(16, sizeof(UDPPacket));
+    DEBUG_QUEUE_MONITOR_REGISTER(udpDataTx);
+
+    espnow_storage_init();
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
+                                                        ESP_EVENT_ANY_ID,
+                                                        &wifi_event_handler,
+                                                        NULL,
+                                                        NULL));
+
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
+                                                    IP_EVENT_STA_GOT_IP,
+                                                    &wifi_event_handler,
+                                                    NULL,
+                                                    NULL));
+
+    wifi_config_t wifi_config = {
+        .sta = {
+            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+            .pmf_cfg = {
+                .capable = true,
+                .required = false,
+            },
+        },
+    };
+
+    strncpy((char *)wifi_config.sta.ssid, CONFIG_WIFI_BASE_SSID, sizeof(wifi_config.sta.ssid));
+    strncpy((char *)wifi_config.sta.password, CONFIG_WIFI_PASSWORD, sizeof(wifi_config.sta.password));
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    espnow_config_t espnow_config = ESPNOW_INIT_CONFIG_DEFAULT();
+    espnow_init(&espnow_config);
+    esp_event_handler_register(ESP_EVENT_ESPNOW, ESP_EVENT_ANY_ID, app_espnow_event_handler, NULL);
+    ESP_ERROR_CHECK(espnow_ctrl_responder_bind(30 * 1000, -55, NULL));
+    espnow_ctrl_responder_data(espnow_ctrl_data_cb);
+
+    DEBUG_PRINT_LOCAL("wifi_init_station complete. Connecting to SSID:%s", CONFIG_WIFI_BASE_SSID);
+
+    if (udp_server_create(NULL) == ESP_FAIL) {
+        DEBUG_PRINT_LOCAL("UDP server create socket failed");
+    } else {
+        DEBUG_PRINT_LOCAL("UDP server create socket succeed");
+    }
+
+    xTaskCreate(udp_server_tx_task, UDP_TX_TASK_NAME, UDP_TX_TASK_STACKSIZE, NULL, UDP_TX_TASK_PRI, NULL);
+    xTaskCreate(udp_server_rx_task, UDP_RX_TASK_NAME, UDP_RX_TASK_STACKSIZE, NULL, UDP_RX_TASK_PRI, NULL);
+
+    isInit = true;
+}
+#endif
