@@ -73,7 +73,9 @@ void piezoInit()
     }
 
      // Configure PIEZO_GPIO_NEG_PIN as output and set LOW
-     gpio_pad_select_gpio(PIEZO_GPIO_NEG_PIN);
+     gpio_reset_pin(PIEZO_GPIO_NEG_PIN);
+     gpio_set_direction(PIEZO_GPIO_NEG_PIN, GPIO_MODE_OUTPUT);
+     //gpio_pad_select_gpio(PIEZO_GPIO_NEG_PIN);
      gpio_set_direction(PIEZO_GPIO_NEG_PIN, GPIO_MODE_OUTPUT);
      gpio_set_level(PIEZO_GPIO_NEG_PIN, 0); // Set to LOW
     //Clock the gpio and the timers
