@@ -28,7 +28,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+//#define USE_PMW3901_UART
+#ifdef USE_PMW3901_UART
+#include "pmw3901_uart.h"
+#else
 #include "pmw3901.h"
+#endif
+
 #include "system.h"
 #include "log.h"
 #include "param.h"
@@ -71,7 +77,7 @@ static bool useFlowDisabled = false;
 // Turn on adaptive standard deviation for the kalman filter
 static bool useAdaptiveStd = true;
 
-// Set standard deviation flow 
+// Set standard deviation flow
 // (will not work if useAdaptiveStd is on)
 static float flowStdFixed = 2.0f;
 
@@ -92,7 +98,11 @@ static void flowdeckTask(void *param)
         vTaskDelay(5);
 #endif
 
+#ifdef USE_PMW3901_UART
+        pmw3901UartReadMotion(&currentMotion);
+#else
         pmw3901ReadMotion(NCS_PIN, &currentMotion);
+#endif
 
         // Flip motion information to comply with sensor mounting
         // (might need to be changed if mounted differently)
@@ -101,21 +111,26 @@ static void flowdeckTask(void *param)
 
         // Outlier removal
         if (abs(accpx) < OULIER_LIMIT && abs(accpy) < OULIER_LIMIT) {
-        if (useAdaptiveStd)
-        {
-        // The standard deviation is fitted by measurements flying over low and high texture 
-        //   and looking at the shutter time
-        float shutter_f = (float)currentMotion.shutter;
-        stdFlow=0.0007984f *shutter_f + 0.4335f;
+            if (useAdaptiveStd)
+            {
+#ifdef USE_PMW3901_UART
+                float squal_f = (float)currentMotion.squal;
+                stdFlow = -0.01257f * squal_f + 4.406f;
+#else
+                // The standard deviation is fitted by measurements flying over low and high texture
+                //   and looking at the shutter time
+                float shutter_f = (float)currentMotion.shutter;
+                stdFlow=0.0007984f *shutter_f + 0.4335f;
 
 
-        // The formula with the amount of features instead
-        /*float squal_f = (float)currentMotion.squal;
-        stdFlow =  -0.01257f * squal_f + 4.406f; */
-        if (stdFlow < 0.1f) stdFlow=0.1f;
-        } else {
-        stdFlow = flowStdFixed;
-        }
+                // The formula with the amount of features instead
+                /*float squal_f = (float)currentMotion.squal;
+                stdFlow =  -0.01257f * squal_f + 4.406f; */
+#endif
+                if (stdFlow < 0.1f) stdFlow=0.1f;
+            } else {
+                stdFlow = flowStdFixed;
+            }
             // Form flow measurement struct and push into the EKF
             flowMeasurement_t flowData;
             flowData.stdDevX = stdFlow;    // [pixels] should perhaps be made larger?
@@ -204,15 +219,17 @@ void flowdeck2Init()
         return;
     }
 
-    // Initialize the VL53L1 sensor using the zRanger deck driver
-    // const DeckDriver *zRanger = deckFindDriverByName("bcZRanger2");
-    // zRanger->init(NULL);
-
-    if (pmw3901Init(NCS_PIN)) {
+#ifdef USE_PMW3901_UART
+    if (pmw3901UartInit()) {
         xTaskCreate(flowdeckTask, FLOW_TASK_NAME, FLOW_TASK_STACKSIZE, NULL, FLOW_TASK_PRI, NULL);
-
         isInit2 = true;
     }
+#else
+    if (pmw3901Init(NCS_PIN)) {
+        xTaskCreate(flowdeckTask, FLOW_TASK_NAME, FLOW_TASK_STACKSIZE, NULL, FLOW_TASK_PRI, NULL);
+        isInit2 = true;
+    }
+#endif
 }
 
 bool flowdeck2Test()
@@ -250,3 +267,5 @@ PARAM_GROUP_START(deck)
 PARAM_ADD(PARAM_UINT8 | PARAM_RONLY, bcFlow, &isInit1)
 PARAM_ADD(PARAM_UINT8 | PARAM_RONLY, bcFlow2, &isInit2)
 PARAM_GROUP_STOP(deck)
+
+
