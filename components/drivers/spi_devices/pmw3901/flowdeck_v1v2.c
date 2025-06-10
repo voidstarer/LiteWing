@@ -215,6 +215,7 @@ static void flowdeckTask(void *param)
 
 void flowdeck2Init()
 {
+    DEBUG_PRINTW("flowdeck2Init called\n");
 	if (isInit1 || isInit2) {
         return;
     }
@@ -227,7 +228,10 @@ void flowdeck2Init()
 #else
     if (pmw3901Init(NCS_PIN)) {
         xTaskCreate(flowdeckTask, FLOW_TASK_NAME, FLOW_TASK_STACKSIZE, NULL, FLOW_TASK_PRI, NULL);
+        DEBUG_PRINTW("pmw3901Init success\n");
         isInit2 = true;
+    } else {
+        DEBUG_PRINTW("pmw3901Init fail\n");
     }
 #endif
 }
