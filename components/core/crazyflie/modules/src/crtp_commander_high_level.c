@@ -337,9 +337,76 @@ void crtpCommanderHighLevelGetSetpoint(setpoint_t* setpoint, const state_t *stat
   }
 }
 
+static void logTrajectoryCommand(enum TrajectoryCommand_e command, const uint8_t* data)
+{
+  switch(command)
+  {
+    case COMMAND_SET_GROUP_MASK: {
+      const struct data_set_group_mask* d = (const struct data_set_group_mask*)data;
+      DEBUG_PRINTI("[CMD] SET_GROUP_MASK: groupMask=%u", d->groupMask);
+      break;
+    }
+    case COMMAND_TAKEOFF: {
+      const struct data_takeoff* d = (const struct data_takeoff*)data;
+      DEBUG_PRINTI("[CMD] TAKEOFF: groupMask=%u, height=%.2f, duration=%.2f", d->groupMask, d->height, d->duration);
+      break;
+    }
+    case COMMAND_LAND: {
+      const struct data_land* d = (const struct data_land*)data;
+      DEBUG_PRINTI("[CMD] LAND: groupMask=%u, height=%.2f, duration=%.2f", d->groupMask, d->height, d->duration);
+      break;
+    }
+    case COMMAND_TAKEOFF_2: {
+      const struct data_takeoff_2* d = (const struct data_takeoff_2*)data;
+      DEBUG_PRINTI("[CMD] TAKEOFF_2: groupMask=%u, height=%.2f, yaw=%.2f, useCurrentYaw=%d, duration=%.2f", d->groupMask, d->height, d->yaw, d->useCurrentYaw, d->duration);
+      break;
+    }
+    case COMMAND_LAND_2: {
+      const struct data_land_2* d = (const struct data_land_2*)data;
+      DEBUG_PRINTI("[CMD] LAND_2: groupMask=%u, height=%.2f, yaw=%.2f, useCurrentYaw=%d, duration=%.2f", d->groupMask, d->height, d->yaw, d->useCurrentYaw, d->duration);
+      break;
+    }
+    case COMMAND_TAKEOFF_WITH_VELOCITY: {
+      const struct data_takeoff_with_velocity* d = (const struct data_takeoff_with_velocity*)data;
+      DEBUG_PRINTI("[CMD] TAKEOFF_WITH_VELOCITY: groupMask=%u, height=%.2f, heightIsRelative=%d, yaw=%.2f, useCurrentYaw=%d, velocity=%.2f", d->groupMask, d->height, d->heightIsRelative, d->yaw, d->useCurrentYaw, d->velocity);
+      break;
+    }
+    case COMMAND_LAND_WITH_VELOCITY: {
+      const struct data_land_with_velocity* d = (const struct data_land_with_velocity*)data;
+      DEBUG_PRINTI("[CMD] LAND_WITH_VELOCITY: groupMask=%u, height=%.2f, heightIsRelative=%d, yaw=%.2f, useCurrentYaw=%d, velocity=%.2f", d->groupMask, d->height, d->heightIsRelative, d->yaw, d->useCurrentYaw, d->velocity);
+      break;
+    }
+    case COMMAND_STOP: {
+      const struct data_stop* d = (const struct data_stop*)data;
+      //DEBUG_PRINTI("[CMD] STOP: groupMask=%u", d->groupMask);
+      break;
+    }
+    case COMMAND_GO_TO: {
+      const struct data_go_to* d = (const struct data_go_to*)data;
+      DEBUG_PRINTI("[CMD] GO_TO: groupMask=%u, relative=%d, x=%.2f, y=%.2f, z=%.2f, yaw=%.2f, duration=%.2f", d->groupMask, d->relative, d->x, d->y, d->z, d->yaw, d->duration);
+      break;
+    }
+    case COMMAND_START_TRAJECTORY: {
+      const struct data_start_trajectory* d = (const struct data_start_trajectory*)data;
+      DEBUG_PRINTI("[CMD] START_TRAJECTORY: groupMask=%u, relative=%d, reversed=%d, trajectoryId=%u, timescale=%.2f", d->groupMask, d->relative, d->reversed, d->trajectoryId, d->timescale);
+      break;
+    }
+    case COMMAND_DEFINE_TRAJECTORY: {
+      const struct data_define_trajectory* d = (const struct data_define_trajectory*)data;
+      DEBUG_PRINTI("[CMD] DEFINE_TRAJECTORY: trajectoryId=%u, location=%u, type=%u", d->trajectoryId, d->description.trajectoryLocation, d->description.trajectoryType);
+      break;
+    }
+    default:
+      DEBUG_PRINTI("[CMD] UNKNOWN: id=%d", command);
+      break;
+  }
+}
+
 static int handleCommand(const enum TrajectoryCommand_e command, const uint8_t* data)
 {
   int ret = 0;
+
+  logTrajectoryCommand(command, data); // Log the command
 
   switch(command)
   {
