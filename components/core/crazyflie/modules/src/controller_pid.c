@@ -1,4 +1,3 @@
-
 #include "stabilizer.h"
 #include "stabilizer_types.h"
 
@@ -14,7 +13,7 @@
 
 #define ATTITUDE_UPDATE_DT    (float)(1.0f/ATTITUDE_RATE)
 
-static bool tiltCompensationEnabled = false;
+static uint8_t tiltCompensationEnabled = 0;
 
 static attitude_t attitudeDesired;
 static attitude_t rateDesired;
@@ -125,7 +124,7 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
     accelz = sensors->acc.z;
   }
 
-  if (tiltCompensationEnabled)
+  if (tiltCompensationEnabled != 0)
   {
     control->thrust = actuatorThrust / sensfusion6GetInvThrustCompensationForTilt();
   }
@@ -134,24 +133,48 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
     control->thrust = actuatorThrust;
   }
 
-  if (control->thrust == 0)
-  {
-    control->thrust = 0;
+  extern uint8_t smartAltHoldActive;
+
+  // Prevent reset when smart altitude hold is active
+// Around line 134, update the reset condition:
+
+// Prevent reset when smart altitude hold is active
+if (control->thrust == 0 && smartAltHoldActive == 0)
+{
+  control->thrust = 0;
+  control->roll = 0;
+  control->pitch = 0;
+  control->yaw = 0;
+
+  cmd_thrust = control->thrust;
+  cmd_roll = control->roll;
+  cmd_pitch = control->pitch;
+  cmd_yaw = control->yaw;
+
+  attitudeControllerResetAllPID();
+  positionControllerResetAllPID();
+
+  // Reset the calculated YAW angle for rate control
+  attitudeDesired.yaw = state->attitude.yaw;
+} else if (smartAltHoldActive == 1) {
+  // When smart altitude hold is active, don't reset Z-axis PID
+  // Only reset roll, pitch, yaw if thrust is zero
+  if (control->thrust == 0) {
     control->roll = 0;
     control->pitch = 0;
     control->yaw = 0;
-
-    cmd_thrust = control->thrust;
+    
     cmd_roll = control->roll;
     cmd_pitch = control->pitch;
     cmd_yaw = control->yaw;
-
+    
+    // Reset only attitude PIDs, keep position PIDs for altitude hold
     attitudeControllerResetAllPID();
-    positionControllerResetAllPID();
-
-    // Reset the calculated YAW angle for rate control
+    // Don't reset position controller PIDs
+    
     attitudeDesired.yaw = state->attitude.yaw;
   }
+}
 }
 
 

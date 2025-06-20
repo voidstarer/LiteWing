@@ -45,6 +45,9 @@
 #include "controller.h"
 #include "power_distribution.h"
 //#include "collision_avoidance.h"
+#include "estimator_kalman.h"
+#include "sensors_mpu6050_hm5883L_ms5611.h"
+#include "sensfusion6.h"  // Add this line
 
 #include "estimator.h"
 //#include "usddeck.h" //usddeckLoggingMode_e
@@ -55,6 +58,9 @@
 #include "static_mem.h"
 #include "rateSupervisor.h"
 
+#define LEVEL_CALIBRATION_SAMPLES 200
+#define LEVEL_CALIBRATION_DELAY_MS 2  // 2ms between samples
+
 static bool isInit;
 static bool emergencyStop = false;
 static int emergencyStopTimeout = EMERGENCY_STOP_TIMEOUT_DISABLED;
@@ -63,9 +69,14 @@ static bool checkStops;
 
 #define PROPTEST_NBR_OF_VARIANCE_VALUES   100
 static bool startPropTest = false;
+extern float qw;
+extern float qx;
+extern float qy;
+extern float qz;
 
 uint32_t inToOutLatency;
-
+static void testProps(sensorData_t *sensors);
+static bool performLevelCalibration(void);  // Add this prototype
 // State variables for the stabilizer
 static setpoint_t setpoint;
 static sensorData_t sensorData;
@@ -237,98 +248,7 @@ static void checkEmergencyStopTimeout()
  * (ie. returning without modifying the output structure).
  */
 
-static void stabilizerTask(void* param)
-{
-  uint32_t tick;
-  uint32_t lastWakeTime;
 
-#ifdef configUSE_APPLICATION_TASK_TAG
-	#if configUSE_APPLICATION_TASK_TAG == 1
-  vTaskSetApplicationTaskTag(0, (void*)TASK_STABILIZER_ID_NBR);
-  #endif
-#endif
-
-  //Wait for the system to be fully started to start stabilization loop
-  systemWaitStart();
-
-  DEBUG_PRINTI("Wait for sensor calibration...\n");
-
-  // Wait for sensors to be calibrated
-  lastWakeTime = xTaskGetTickCount();
-  while(!sensorsAreCalibrated()) {
-    vTaskDelayUntil(&lastWakeTime, F2T(RATE_MAIN_LOOP));
-  }
-  // Initialize tick to something else then 0
-  tick = 1;
-
-  rateSupervisorInit(&rateSupervisorContext, xTaskGetTickCount(), M2T(1000), 997, 1003, 1);
-
-  DEBUG_PRINTI("Ready to fly.\n");
-
-  while(1) {
-    // The sensor should unlock at 1kHz
-    sensorsWaitDataReady();
-
-    if (startPropTest != false) {
-      // TODO: What happens with estimator when we run tests after startup?
-      testState = configureAcc;
-      startPropTest = false;
-    }
-
-    if (testState != testDone) {
-      sensorsAcquire(&sensorData, tick);
-      testProps(&sensorData);
-    } else {
-      // allow to update estimator dynamically
-      if (getStateEstimator() != estimatorType) {
-        stateEstimatorSwitchTo(estimatorType);
-        estimatorType = getStateEstimator();
-      }
-      // allow to update controller dynamically
-      if (getControllerType() != controllerType) {
-        controllerInit(controllerType);
-        controllerType = getControllerType();
-      }
-
-      stateEstimator(&state, &sensorData, &control, tick);
-      compressState();
-
-      commanderGetSetpoint(&setpoint, &state);
-      compressSetpoint();
-
-      sitAwUpdateSetpoint(&setpoint, &sensorData, &state);
-      //collisionAvoidanceUpdateSetpoint(&setpoint, &sensorData, &state, tick);
-
-      controller(&control, &setpoint, &sensorData, &state, tick);
-
-      checkEmergencyStopTimeout();
-
-      checkStops = systemIsArmed();
-      if (emergencyStop || (systemIsArmed() == false)) {
-        powerStop();
-      } else {
-        powerDistribution(&control);
-      }
-
-      //TODO: Log data to uSD card if configured
-      /*if (usddeckLoggingEnabled()
-          && usddeckLoggingMode() == usddeckLoggingMode_SynchronousStabilizer
-          && RATE_DO_EXECUTE(usddeckFrequency(), tick)) {
-        usddeckTriggerLogging();
-      }*/
-    }
-    calcSensorToOutputLatency(&sensorData);
-    tick++;
-    STATS_CNT_RATE_EVENT(&stabilizerRate);
-
-    if (!rateSupervisorValidate(&rateSupervisorContext, xTaskGetTickCount())) {
-      if (!rateWarningDisplayed) {
-        DEBUG_PRINT("WARNING: stabilizer loop rate is off (%"PRIu32")\n", rateSupervisorLatestCount(&rateSupervisorContext));
-        rateWarningDisplayed = true;
-      }
-    }
-  }
-}
 
 void stabilizerSetEmergencyStop()
 {
@@ -552,6 +472,88 @@ static void testProps(sensorData_t *sensors)
     testState = testDone;
   }
 }
+
+
+
+// void estimatorComplementarySetRollPitchCalibration(float rollOffset, float pitchOffset)
+// {
+//   // Apply calibration to the complementary filter
+//   sensfusion6SetCalibration(rollOffset, pitchOffset);
+  
+//   DEBUG_PRINTI("Complementary estimator: Applied roll offset %.2f, pitch offset %.2f\n", 
+//                (double)rollOffset, (double)pitchOffset);
+// }
+
+
+static bool performLevelCalibration(void)
+{
+  DEBUG_PRINTI("=== Starting level calibration ===");
+  
+  // Variables for averaging accelerometer readings
+  float accXSum = 0;
+  float accYSum = 0;
+  float accZSum = 0;
+  sensorData_t tempSensorData;
+  uint32_t validSamples = 0;
+  TickType_t lastWakeTime = xTaskGetTickCount();
+
+  // Ensure motors are off during calibration
+  powerStop();
+
+  DEBUG_PRINTI("Taking %d accelerometer samples...", LEVEL_CALIBRATION_SAMPLES);
+
+  for (int i = 0; i < LEVEL_CALIBRATION_SAMPLES; i++) {
+    vTaskDelayUntil(&lastWakeTime, M2T(LEVEL_CALIBRATION_DELAY_MS));
+    
+    // Get fresh sensor data
+    sensorsAcquire(&tempSensorData, 0);
+    
+    // Check if acceleration data is reasonable (not during motion)
+    float accMag = sqrtf(tempSensorData.acc.x * tempSensorData.acc.x + 
+                        tempSensorData.acc.y * tempSensorData.acc.y + 
+                        tempSensorData.acc.z * tempSensorData.acc.z);
+    
+    if (fabsf(accMag - 1.0f) < 0.1f) { // Should be close to 1G when stationary
+      accXSum += tempSensorData.acc.x;
+      accYSum += tempSensorData.acc.y;
+      accZSum += tempSensorData.acc.z;
+      validSamples++;
+    }
+    
+    if (i % 50 == 0) {
+      DEBUG_PRINTI("Sample %d: acc_mag=%.3f, valid_samples=%lu", i, (double)accMag, (unsigned long)validSamples);
+    }
+  }
+
+  if (validSamples < LEVEL_CALIBRATION_SAMPLES / 2) {
+    DEBUG_PRINTE("Level calibration failed: too few valid samples (%lu/%d)\n", 
+                 (unsigned long)validSamples, LEVEL_CALIBRATION_SAMPLES);
+    return false;
+  }
+
+  // Calculate average acceleration values
+  float accXAvg = accXSum / validSamples;
+  float accYAvg = accYSum / validSamples;
+  float accZAvg = accZSum / validSamples;
+  
+  DEBUG_PRINTI("Average accelerometer readings: X=%.4f, Y=%.4f, Z=%.4f", 
+               (double)accXAvg, (double)accYAvg, (double)accZAvg);
+  
+  // Calculate roll and pitch angles from acceleration
+  float roll = atan2f(accYAvg, accZAvg) * 180.0f / (float)M_PI;
+  float pitch = atan2f(-accXAvg, sqrtf(accYAvg * accYAvg + accZAvg * accZAvg)) * 180.0f / (float)M_PI;
+  
+  DEBUG_PRINTI("Calculated level errors: roll=%.2f°, pitch=%.2f°", (double)roll, (double)pitch);
+  
+  // Apply calibration ONLY at sensor level - this will correct all subsequent readings
+  DEBUG_PRINTI("Applying sensor-level calibration only...");
+  sensorsApplyLevelCalibration(roll, pitch);
+  
+  // DO NOT apply calibration at estimator level to avoid double correction
+  DEBUG_PRINTI("=== Level calibration complete ===");
+  return true;
+}
+
 PARAM_GROUP_START(health)
 PARAM_ADD(PARAM_UINT8, startPropTest, &startPropTest)
 PARAM_GROUP_STOP(health)
@@ -705,3 +707,117 @@ LOG_ADD(LOG_INT16, rateRoll, &stateCompressed.rateRoll)   // angular velocity - 
 LOG_ADD(LOG_INT16, ratePitch, &stateCompressed.ratePitch)
 LOG_ADD(LOG_INT16, rateYaw, &stateCompressed.rateYaw)
 LOG_GROUP_STOP(stateEstimateZ)
+
+static float smartAltHoldTarget = 0.0f;
+static uint8_t smartAltHoldStatus = 0;
+
+static void stabilizerTask(void* param)
+{
+  uint32_t tick;
+  uint32_t lastWakeTime;
+
+#ifdef configUSE_APPLICATION_TASK_TAG
+  #if configUSE_APPLICATION_TASK_TAG == 1
+  vTaskSetApplicationTaskTag(0, (void*)TASK_STABILIZER_ID_NBR);
+  #endif
+#endif
+
+  //Wait for the system to be fully started to start stabilization loop
+  systemWaitStart();
+
+  DEBUG_PRINTI("Wait for sensor calibration...\n");
+
+  // Wait for sensors to be calibrated
+  lastWakeTime = xTaskGetTickCount();
+  while(!sensorsAreCalibrated()) {
+    vTaskDelayUntil(&lastWakeTime, F2T(RATE_MAIN_LOOP));
+  }
+  
+  // Perform level calibration after basic sensor calibration
+  if (!performLevelCalibration()) {
+    DEBUG_PRINTW("Level calibration failed, using default values.\n");
+  }
+  
+  // Initialize tick to something else then 0
+  tick = 1;
+
+  rateSupervisorInit(&rateSupervisorContext, xTaskGetTickCount(), M2T(1000), 997, 1003, 1);
+
+  DEBUG_PRINTI("Ready to fly.\n");
+
+  while(1) {
+    // The sensor should unlock at 1kHz
+    sensorsWaitDataReady();
+
+    if (startPropTest != false) {
+      // TODO: What happens with estimator when we run tests after startup?
+      testState = configureAcc;
+      startPropTest = false;
+    }
+
+    if (testState != testDone) {
+      sensorsAcquire(&sensorData, tick);
+      testProps(&sensorData);
+    } else {
+      // allow to update estimator dynamically
+      if (getStateEstimator() != estimatorType) {
+        stateEstimatorSwitchTo(estimatorType);
+        estimatorType = getStateEstimator();
+      }
+      // allow to update controller dynamically
+      if (getControllerType() != controllerType) {
+        controllerInit(controllerType);
+        controllerType = getControllerType();
+      }
+
+      stateEstimator(&state, &sensorData, &control, tick);
+      compressState();
+
+      commanderGetSetpoint(&setpoint, &state);
+      compressSetpoint();
+
+      sitAwUpdateSetpoint(&setpoint, &sensorData, &state);
+      //collisionAvoidanceUpdateSetpoint(&setpoint, &sensorData, &state, tick);
+
+      controller(&control, &setpoint, &sensorData, &state, tick);
+
+      checkEmergencyStopTimeout();
+
+      checkStops = systemIsArmed();
+      if (emergencyStop || (systemIsArmed() == false)) {
+        powerStop();
+      } else {
+        powerDistribution(&control);
+      }
+
+      // Update logging variables
+      extern uint8_t smartAltHoldActive;
+      extern float smartAltHoldTargetHeight;
+      
+      smartAltHoldStatus = smartAltHoldActive;
+      smartAltHoldTarget = smartAltHoldTargetHeight;
+
+      //TODO: Log data to uSD card if configured
+      /*if (usddeckLoggingEnabled()
+          && usddeckLoggingMode() == usddeckLoggingMode_SynchronousStabilizer
+          && RATE_DO_EXECUTE(usddeckFrequency(), tick)) {
+        usddeckTriggerLogging();
+      }*/
+    }
+    calcSensorToOutputLatency(&sensorData);
+    tick++;
+    STATS_CNT_RATE_EVENT(&stabilizerRate);
+
+    if (!rateSupervisorValidate(&rateSupervisorContext, xTaskGetTickCount())) {
+      if (!rateWarningDisplayed) {
+        DEBUG_PRINT("WARNING: stabilizer loop rate is off (%"PRIu32")\n", rateSupervisorLatestCount(&rateSupervisorContext));
+        rateWarningDisplayed = true;
+      }
+    }
+  }
+}
+
+LOG_GROUP_START(smartAlt)
+LOG_ADD(LOG_UINT8, active, &smartAltHoldStatus)
+LOG_ADD(LOG_FLOAT, targetHeight, &smartAltHoldTarget)
+LOG_GROUP_STOP(smartAlt)

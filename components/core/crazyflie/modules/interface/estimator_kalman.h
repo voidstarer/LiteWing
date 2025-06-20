@@ -77,6 +77,7 @@ bool estimatorKalmanEnqueueAbsoluteHeight(const heightMeasurement_t *height);
 bool estimatorKalmanEnqueueFlow(const flowMeasurement_t *flow);
 bool estimatorKalmanEnqueueYawError(const yawErrorMeasurement_t* error);
 //bool estimatorKalmanEnqueueSweepAngles(const sweepAngleMeasurement_t *angles);
+void estimatorKalmanSetRollPitchCalibration(float rollOffset, float pitchOffset);
 
 void estimatorKalmanGetEstimatedPos(point_t* pos);
 

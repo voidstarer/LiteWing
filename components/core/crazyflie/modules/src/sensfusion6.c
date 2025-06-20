@@ -27,6 +27,8 @@
 
 #include "sensfusion6.h"
 #include "log.h"
+#define DEBUG_MODULE "SENSORS"
+#include "debug_cf.h"
 #include "param.h"
 #include "physicalConstants.h"
 
@@ -312,6 +314,36 @@ static void estimatedGravityDirection(float* gx, float* gy, float* gz)
   *gx = 2 * (qx * qz - qw * qy);
   *gy = 2 * (qw * qx + qy * qz);
   *gz = qw * qw - qx * qx - qy * qy + qz * qz;
+}
+
+void sensfusion6SetCalibration(float rollOffset, float pitchOffset)
+{
+  // Convert degrees to radians for internal use
+  // Apply correction opposite to the measured error
+  float rollRad = -rollOffset * (float)M_PI / 180.0f;
+  float pitchRad = -pitchOffset * (float)M_PI / 180.0f;
+  
+  // Create rotation quaternion based on offsets
+  float cr = cosf(rollRad / 2.0f);
+  float sr = sinf(rollRad / 2.0f);
+  float cp = cosf(pitchRad / 2.0f);
+  float sp = sinf(pitchRad / 2.0f);
+  
+  // Apply calibration to current quaternion
+  float qw_temp = cr * cp;
+  float qx_temp = sr * cp;
+  float qy_temp = cr * sp;
+  float qz_temp = -sr * sp;
+  
+  // Update quaternion with calibration applied
+  // This will correct the initial attitude estimate
+  qw = qw_temp;
+  qx = qx_temp;
+  qy = qy_temp;
+  qz = qz_temp;
+  
+  DEBUG_PRINTI("sensfusion6: Applied roll correction %.2f°, pitch correction %.2f°\n", 
+               (double)(-rollOffset), (double)(-pitchOffset));
 }
 
 LOG_GROUP_START(sensfusion6)

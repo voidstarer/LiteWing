@@ -83,6 +83,12 @@ static const float thrustScale = 1000.0f;
 #define POSITION_LPF_CUTOFF_FREQ 20.0f
 #define POSITION_LPF_ENABLE true
 
+// Add these variables after existing static variables (around line 70)
+static float smartAltHoldKp = 3.0f;  // Increased from 2.0f
+static float smartAltHoldKi = 1.0f;  // Increased from 0.5f
+static float smartAltHoldKd = 0.2f;  // Added some derivative gain
+static uint8_t useSmartAltHoldGains = 1;  // Enable by default
+
 #ifndef UNIT_TEST
 static struct this_s this = {
   .pidVX = {
@@ -206,10 +212,38 @@ void positionController(float* thrust, attitude_t *attitude, setpoint_t *setpoin
   } else if (setpoint->velocity_body) {
     setpoint->velocity.y = bodyvy * cosyaw + bodyvx * sinyaw;
   }
-  if (setpoint->mode.z == modeAbs) {
+  // Check if smart altitude hold is active
+  extern uint8_t smartAltHoldActive;
+  
+  // In the positionController function, around line 215:
+
+if (setpoint->mode.z == modeAbs) {
+  // Use special gains for smart altitude hold if active
+  if (smartAltHoldActive != 0 && useSmartAltHoldGains != 0) {
+    // Temporarily override PID gains
+    float originalKp = this.pidZ.pid.kp;
+    float originalKi = this.pidZ.pid.ki;
+    float originalKd = this.pidZ.pid.kd;
+    
+    this.pidZ.pid.kp = smartAltHoldKp;
+    this.pidZ.pid.ki = smartAltHoldKi;
+    this.pidZ.pid.kd = smartAltHoldKd;
+    
+    // Add velocity damping for better stability
+    float heightError = setpoint->position.z - state->position.z;
+    float velocityDamping = -0.5f * state->velocity.z;  // Damping factor
+    
+    setpoint->velocity.z = runPid(state->position.z, &this.pidZ, setpoint->position.z, DT) + velocityDamping;
+    
+    // Restore original gains
+    this.pidZ.pid.kp = originalKp;
+    this.pidZ.pid.ki = originalKi;
+    this.pidZ.pid.kd = originalKd;
+  } else {
     setpoint->velocity.z = runPid(state->position.z, &this.pidZ, setpoint->position.z, DT);
   }
-
+}
+ 
   velocityController(thrust, attitude, setpoint, state);
 }
 
@@ -323,3 +357,4 @@ PARAM_ADD(PARAM_FLOAT, xyVelMax, &xyVelMax)
 PARAM_ADD(PARAM_FLOAT, zVelMax,  &zVelMax)
 
 PARAM_GROUP_STOP(posCtlPid)
+

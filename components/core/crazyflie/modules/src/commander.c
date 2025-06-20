@@ -46,11 +46,23 @@ const static int priorityDisable = COMMANDER_PRIORITY_DISABLE;
 
 static uint32_t lastUpdate;
 static bool enableHighLevel = false;
+#include "debug_cf.h" // Add this if not already included
+
+static setpoint_t lastSetpoint; // Add this declaration near other static variables
 
 static QueueHandle_t setpointQueue;
 STATIC_MEM_QUEUE_ALLOC(setpointQueue, 1, sizeof(setpoint_t));
 static QueueHandle_t priorityQueue;
 STATIC_MEM_QUEUE_ALLOC(priorityQueue, 1, sizeof(int));
+
+uint8_t smartAltHoldActive = 0;
+uint8_t smartAltHoldEnabled = 1;  // Enable by default
+
+float smartAltHoldHeight = 0.3f;   // Trigger height in meters
+float smartAltHoldTargetHeight = 0.3f;  // Target height to maintain
+
+/* Private function prototypes */
+static void applySmartAltHold(setpoint_t *setpoint, const state_t *state);
 
 /* Public functions */
 void commanderInit(void)
@@ -104,6 +116,11 @@ void commanderNotifySetpointsStop(int remainValidMillisecs)
 void commanderGetSetpoint(setpoint_t *setpoint, const state_t *state)
 {
   xQueuePeek(setpointQueue, setpoint, 0);
+
+  // Apply smart altitude hold
+  applySmartAltHold(setpoint, state);
+
+  lastSetpoint = *setpoint;
   lastUpdate = setpoint->timestamp;
   uint32_t currentTime = xTaskGetTickCount();
 
@@ -153,6 +170,46 @@ int commanderGetActivePriority(void)
   return priority;
 }
 
+/* Private functions */
+static void applySmartAltHold(setpoint_t *setpoint, const state_t *state)
+{
+  if (!smartAltHoldEnabled) {
+    smartAltHoldActive = 0;
+    return;
+  }
+
+  // Check if we should activate smart altitude hold
+  if (smartAltHoldActive != 1 && state->position.z >= smartAltHoldHeight && setpoint->thrust > 10000) {
+    smartAltHoldActive = 1;
+    smartAltHoldTargetHeight = smartAltHoldHeight;  // Use configured height, not current
+    DEBUG_PRINTI("Smart AltHold activated at height: %.2f m, target: %.2f m\n", 
+                 (double)state->position.z, (double)smartAltHoldTargetHeight);
+  }
+  
+  // Check if we should deactivate (only when thrust is very low for emergency)
+  if (smartAltHoldActive && setpoint->thrust < 5000) {
+    smartAltHoldActive = 0;
+    DEBUG_PRINTI("Smart AltHold deactivated - emergency stop\n");
+  }
+  
+  // Apply altitude hold if active
+  if (smartAltHoldActive) {
+    // Override Z mode to absolute position mode
+    setpoint->mode.z = modeAbs;
+    setpoint->position.z = smartAltHoldTargetHeight;
+    
+    // Keep roll and pitch in their original modes (manual control)
+    // Don't modify setpoint->mode.roll and setpoint->mode.pitch
+  }
+}
+
 PARAM_GROUP_START(commander)
 PARAM_ADD(PARAM_UINT8, enHighLevel, &enableHighLevel)
 PARAM_GROUP_STOP(commander)
+
+PARAM_GROUP_START(smartAltHold)
+PARAM_ADD(PARAM_UINT8, enabled, &smartAltHoldEnabled)
+PARAM_ADD(PARAM_FLOAT, height, &smartAltHoldHeight)
+PARAM_ADD(PARAM_FLOAT, targetHeight, &smartAltHoldTargetHeight)
+PARAM_ADD(PARAM_UINT8, active, &smartAltHoldActive)  // Read-only status
+PARAM_GROUP_STOP(smartAltHold)

@@ -368,7 +368,7 @@ void processAccGyroMeasurements(const uint8_t *buffer)
     gyroBiasFound = processGyroBias(gyroRaw.x, gyroRaw.y, gyroRaw.z, &gyroBias);
 #endif
 
-    /*sensors step 2.3 Calculates the acc scale when platform is steady */
+    /*sensors step 2.3 Calculates the acc scale when the platform is steady */
     if (gyroBiasFound) {
         processAccScale(accelRaw.x, accelRaw.y, accelRaw.z);
     }
@@ -525,7 +525,7 @@ static void sensorsDeviceInit(void)
 
     if (flowdeck2Test() == true) {
         isPmw3901Present = true;
-        setCommandermode(POSHOLD_MODE);
+        // setCommandermode(POSHOLD_MODE);
         DEBUG_PRINTI("PMW3901 SPI connection [OK].\n");
     } else {
         //TODO: Should sensor test fail hard if no connection
@@ -541,11 +541,37 @@ static void sensorsDeviceInit(void)
     // sinPitch = sinf(configblockGetCalibPitch() * (float)M_PI / 180);
     // cosRoll = cosf(configblockGetCalibRoll() * (float)M_PI / 180);
     // sinRoll = sinf(configblockGetCalibRoll() * (float)M_PI / 180);
+#ifdef CONFIG_USE_DYNAMIC_CALIBRATION
+    // When using dynamic calibration, we'll use zeros here and let the level calibration handle it
+    cosPitch = 1.0f;  // cos(0) = 1
+    sinPitch = 0.0f;  // sin(0) = 0
+    cosRoll = 1.0f;   // cos(0) = 1
+    sinRoll = 0.0f;   // sin(0) = 0
+    DEBUG_PRINTI("Using dynamic level calibration - initial angles set to zero");
+    DEBUG_PRINTI("Static calibration disabled: cosPitch=%.3f, sinPitch=%.3f, cosRoll=%.3f, sinRoll=%.3f", 
+                 (double)cosPitch, (double)sinPitch, (double)cosRoll, (double)sinRoll);
+#else
+    // Use static calibration from config
     cosPitch = cosf(PITCH_CALIB * (float)M_PI / 180);
     sinPitch = sinf(PITCH_CALIB * (float)M_PI / 180);
     cosRoll = cosf(ROLL_CALIB * (float)M_PI / 180);
     sinRoll = sinf(ROLL_CALIB * (float)M_PI / 180);
-    DEBUG_PRINTI("pitch_calib = %f,roll_calib = %f",PITCH_CALIB,ROLL_CALIB);
+    DEBUG_PRINTI("Using static calibration: pitch_calib = %f, roll_calib = %f", PITCH_CALIB, ROLL_CALIB);
+    DEBUG_PRINTI("Static calibration values: cosPitch=%.3f, sinPitch=%.3f, cosRoll=%.3f, sinRoll=%.3f", 
+                 (double)cosPitch, (double)sinPitch, (double)cosRoll, (double)sinRoll);
+#endif
+DEBUG_PRINTI("Final calibration values: cosPitch=%.3f, sinPitch=%.3f, cosRoll=%.3f, sinRoll=%.3f", 
+             (double)cosPitch, (double)sinPitch, (double)cosRoll, (double)sinRoll);
+
+             DEBUG_PRINTI("=== Final sensor calibration check ===");
+DEBUG_PRINTI("PITCH_CALIB=%.3f, ROLL_CALIB=%.3f", PITCH_CALIB, ROLL_CALIB);
+DEBUG_PRINTI("Final values: cosPitch=%.6f, sinPitch=%.6f, cosRoll=%.6f, sinRoll=%.6f", 
+             (double)cosPitch, (double)sinPitch, (double)cosRoll, (double)sinRoll);
+#ifdef CONFIG_USE_DYNAMIC_CALIBRATION
+DEBUG_PRINTI("Dynamic calibration is ENABLED");
+#else
+DEBUG_PRINTI("Dynamic calibration is DISABLED - using static values");
+#endif
 }
 
 static void sensorsSetupSlaveRead(void)
@@ -1033,6 +1059,26 @@ static void applyAxis3fLpf(lpf2pData *data, Axis3f *in)
     for (uint8_t i = 0; i < 3; i++) {
         in->axis[i] = lpf2pApply(&data[i], in->axis[i]);
     }
+}
+
+void sensorsApplyLevelCalibration(float rollOffset, float pitchOffset)
+{
+  // When we measure a positive roll offset, it means the sensor is reading too high
+  // So we need to apply a POSITIVE correction to the calibration angles
+  // to make the sensor read lower (closer to zero)
+  float rollRad = rollOffset * (float)M_PI / 180.0f;
+  float pitchRad = -pitchOffset * (float)M_PI / 180.0f;
+  
+  // Update the calibration constants
+  cosPitch = cosf(pitchRad);
+  sinPitch = sinf(pitchRad);
+  cosRoll = cosf(rollRad);
+  sinRoll = sinf(rollRad);
+  
+  DEBUG_PRINTI("Sensor calibration: Applied roll correction %.2f°, pitch correction %.2f°", 
+               (double)rollOffset, (double)pitchOffset);
+  DEBUG_PRINTI("New calibration values: cosPitch=%.3f, sinPitch=%.3f, cosRoll=%.3f, sinRoll=%.3f", 
+               (double)cosPitch, (double)sinPitch, (double)cosRoll, (double)sinRoll);
 }
 
 #ifdef GYRO_ADD_RAW_AND_VARIANCE_LOG_VALUES

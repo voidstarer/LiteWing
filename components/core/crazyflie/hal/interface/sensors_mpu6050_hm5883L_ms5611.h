@@ -40,5 +40,6 @@ bool sensorsMpu6050Hmc5883lMs5611ReadAcc(Axis3f *acc);
 bool sensorsMpu6050Hmc5883lMs5611ReadMag(Axis3f *mag);
 bool sensorsMpu6050Hmc5883lMs5611ReadBaro(baro_t *baro);
 void sensorsMpu6050Hmc5883lMs5611SetAccMode(accModes accMode);
+void sensorsApplyLevelCalibration(float rollOffset, float pitchOffset);
 
 #endif // __SENSORS_MPU9250_LPS25H_H__

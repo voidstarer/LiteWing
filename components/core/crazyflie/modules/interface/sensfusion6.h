@@ -35,5 +35,6 @@ void sensfusion6GetQuaternion(float* qx, float* qy, float* qz, float* qw);
 void sensfusion6GetEulerRPY(float* roll, float* pitch, float* yaw);
 float sensfusion6GetAccZWithoutGravity(const float ax, const float ay, const float az);
 float sensfusion6GetInvThrustCompensationForTilt();
+void sensfusion6SetCalibration(float rollOffset, float pitchOffset);
 
 #endif /* SENSORFUSION6_H_ */

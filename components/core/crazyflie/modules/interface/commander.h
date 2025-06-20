@@ -42,6 +42,9 @@
 void commanderInit(void);
 bool commanderTest(void);
 uint32_t commanderGetInactivityTime(void);
+extern uint8_t smartAltHoldActive;
+extern float smartAltHoldTargetHeight;
+
 
 void commanderSetSetpoint(setpoint_t *setpoint, int priority);
 int commanderGetActivePriority(void);

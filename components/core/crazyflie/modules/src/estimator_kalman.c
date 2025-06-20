@@ -704,6 +704,52 @@ void estimatorKalmanGetEstimatedRot(float * rotationMatrix) {
   memcpy(rotationMatrix, coreData.R, 9*sizeof(float));
 }
 
+
+void estimatorKalmanSetRollPitchCalibration(float rollOffset, float pitchOffset)
+{
+  // Convert to radians for internal processing
+  // Apply correction opposite to the measured error
+  float rollOffsetRad = -rollOffset * (float)M_PI / 180.0f;
+  float pitchOffsetRad = -pitchOffset * (float)M_PI / 180.0f;
+  
+  xSemaphoreTake(dataMutex, portMAX_DELAY);
+  
+  // Create rotation quaternion based on offsets
+  float cr = cosf(rollOffsetRad / 2.0f);
+  float sr = sinf(rollOffsetRad / 2.0f);
+  float cp = cosf(pitchOffsetRad / 2.0f);
+  float sp = sinf(pitchOffsetRad / 2.0f);
+  
+  // Apply calibration to the initial quaternion
+  float qw_calib = cr * cp;
+  float qx_calib = sr * cp;
+  float qy_calib = cr * sp;
+  float qz_calib = -sr * sp;
+  
+  // Update the current state quaternion with the calibration
+  coreData.q[0] = qw_calib;
+  coreData.q[1] = qx_calib;
+  coreData.q[2] = qy_calib;
+  coreData.q[3] = qz_calib;
+  
+  // Update the rotation matrix to match the new quaternion
+  coreData.R[0][0] = 1.0f - 2.0f * (qy_calib * qy_calib + qz_calib * qz_calib);
+  coreData.R[0][1] = 2.0f * (qx_calib * qy_calib - qw_calib * qz_calib);
+  coreData.R[0][2] = 2.0f * (qx_calib * qz_calib + qw_calib * qy_calib);
+  
+  coreData.R[1][0] = 2.0f * (qx_calib * qy_calib + qw_calib * qz_calib);
+  coreData.R[1][1] = 1.0f - 2.0f * (qx_calib * qx_calib + qz_calib * qz_calib);
+  coreData.R[1][2] = 2.0f * (qy_calib * qz_calib - qw_calib * qx_calib);
+  
+  coreData.R[2][0] = 2.0f * (qx_calib * qz_calib - qw_calib * qy_calib);
+  coreData.R[2][1] = 2.0f * (qy_calib * qz_calib + qw_calib * qx_calib);
+  coreData.R[2][2] = 1.0f - 2.0f * (qx_calib * qx_calib + qy_calib * qy_calib);
+  
+  xSemaphoreGive(dataMutex);
+  
+  DEBUG_PRINTI("Kalman estimator: Applied roll correction %.2f°, pitch correction %.2f°\n", 
+               (double)(-rollOffset), (double)(-pitchOffset));
+}
 // Temporary development groups
 LOG_GROUP_START(kalman_states)
   LOG_ADD(LOG_FLOAT, ox, &coreData.S[KC_STATE_X])

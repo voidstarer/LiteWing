@@ -73,6 +73,13 @@ menu "ESPDrone Config"
             default 3
             help
                 Wi-Fi Max Station Connection, 1-6
+        config USE_DYNAMIC_CALIBRATION
+            bool "Use dynamic level calibration on startup"
+            default y
+            help
+                When enabled, the drone will perform level calibration on startup.
+                This is recommended for most users as it will automatically calibrate
+                the accelerometer to find the true level position.
     endmenu
 
     menu "calibration angle"

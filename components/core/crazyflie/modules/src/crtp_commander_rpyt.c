@@ -179,14 +179,24 @@ void crtpCommanderRpytDecodeSetpoint(setpoint_t *setpoint, CRTPPacket *pk)
     setpoint->thrust = fminf(rawThrust, MAX_THRUST);
   }
 
-  if (altHoldMode) {
-    setpoint->thrust = 0;
-    setpoint->mode.z = modeVelocity;
-
-    setpoint->velocity.z = ((float) rawThrust - 32767.f) / 32767.f;
+  
+if (altHoldMode) {
+  setpoint->thrust = 0;
+  setpoint->mode.z = modeVelocity;
+  setpoint->velocity.z = ((float) rawThrust - 32767.f) / 32767.f;
+} else {
+  // Check if smart altitude hold is active
+  extern uint8_t smartAltHoldActive;
+  
+  if (smartAltHoldActive == 1) {
+    // Smart altitude hold is managing Z, don't disable it
+    // Keep thrust for emergency override
+    setpoint->thrust = fminf(rawThrust, MAX_THRUST);
   } else {
     setpoint->mode.z = modeDisable;
+    setpoint->thrust = fminf(rawThrust, MAX_THRUST);
   }
+}
 
   // roll/pitch
   if (posHoldMode) {
@@ -256,6 +266,17 @@ void crtpCommanderRpytDecodeSetpoint(setpoint_t *setpoint, CRTPPacket *pk)
       setpoint->attitudeRate.yaw = 0;
       setpoint->attitude.yaw = values->yaw;
     }
+  }
+
+  // Add check for smart altitude hold to preserve manual roll/pitch
+  extern uint8_t smartAltHoldActive;  // Declare external variable
+
+  if (!altHoldMode && !posHoldMode && !posSetMode) {
+    // In manual mode, check if smart altitude hold is active
+    if (smartAltHoldActive != 1) {
+      setpoint->mode.z = modeDisable;
+    }
+    // If smart altitude hold is active, mode.z will be set by commander
   }
 }
 
