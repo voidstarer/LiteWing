@@ -46,7 +46,7 @@ void controllerInit(ControllerType controller) {
 
   initController();
 
-  DEBUG_PRINTD("Using %s (%d) controller\n", controllerGetName(), currentController);
+  DEBUG_PRINTI("Using %s (%d) controller\n", controllerGetName(), currentController);
 }
 
 ControllerType getControllerType(void) {

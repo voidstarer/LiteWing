@@ -128,6 +128,9 @@ void kalmanCoreUpdateWithTof(kalmanCoreData_t* this, tofMeasurement_t *tof);
 // Measurement of yaw error (outside measurement Vs current estimation)
 void kalmanCoreUpdateWithYawError(kalmanCoreData_t *this, yawErrorMeasurement_t *error);
 
+// Measurement of magnetometer for yaw correction
+void kalmanCoreUpdateWithMag(kalmanCoreData_t *this, const Axis3f *mag);
+
 // Measurement of sweep angles from a Lighthouse base station
 //void kalmanCoreUpdateWithSweepAngles(kalmanCoreData_t *this, sweepAngleMeasurement_t *angles, const uint32_t tick);
 

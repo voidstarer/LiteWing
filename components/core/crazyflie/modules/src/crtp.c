@@ -171,6 +171,7 @@ void crtpTxTask(void *param)
   }
 }
 
+//static uint32_t pktno=0;
 void crtpRxTask(void *param)
 {
   CRTPPacket p;
@@ -181,6 +182,16 @@ void crtpRxTask(void *param)
     {
       if (!link->receivePacket(&p))
       {
+#if 0
+	++pktno;
+        printf("[RX %d] size=%u port=%u channel=%u\n", pktno, p.size, p.port, p.channel);
+	printf(" %02x", p.size); // Print size byte
+	printf(" %02x", p.header); // Print header byte
+	for (uint8_t i = 0; i < p.size; i++) {
+	    printf(" %02x", p.data[i]); // Print each data byte
+	}
+	printf("\n");
+#endif
         if (queues[p.port])
         {
           if (xQueueSend(queues[p.port], &p, 0) == errQUEUE_FULL)

@@ -52,7 +52,7 @@
 #include "stm32_legacy.h"
 #include "static_mem.h"
 
-#if 0
+#if 1
 #define LOG_DEBUG(fmt, ...) DEBUG_PRINTD("D/log " fmt, ## __VA_ARGS__)
 #define LOG_ERROR(fmt, ...) DEBUG_PRINTD("E/log " fmt, ## __VA_ARGS__)
 #else
@@ -90,6 +90,7 @@ struct log_ops {
   uint8_t storageType : 4;
   uint8_t logType     : 4;
   void * variable;
+  char * name;
   acquisitionType_t acquisitionType;
 };
 
@@ -599,14 +600,17 @@ static int logAppendBlockV2(int id, struct ops_setting_v2 * settings, int len)
       }
 
       ops->variable    = logs[varId].address;
+      ops->name    = logs[varId].name;
       ops->storageType = logs[varId].type & TYPE_MASK;
       ops->logType     = settings[i].logType & TYPE_MASK;
       ops->acquisitionType = acquisitionTypeFromLogType(logs[varId].type);
 
-      LOG_DEBUG("Appended variable %d to block %d\n", settings[i].id, id);
+      //LOG_DEBUG("Appended variable %d (%s) to block %d\n", settings[i].id, logs[varId].name, id);
+      //printf("Appended variable %d (%s) to block %d\n", settings[i].id, logs[varId].name, id);
     } else {                     //Memory variable
       //TODO: Check that the address is in ram
       ops->variable    = (void*)(&settings[i]+1);
+      ops->name = NULL;
       ops->storageType = (settings[i].logType>>4) & TYPE_MASK;
       ops->logType     = settings[i].logType & TYPE_MASK;
       ops->acquisitionType = acqType_memory;
@@ -840,16 +844,19 @@ void logRunBlock(void * arg)
       // drop this and subsequent items.
       if (ops->logType == LOG_FLOAT)
       {
+	//printf("appending %s of size: %u\n", ops->name, 4);
         if (!appendToPacket(&pk, &valuef, 4)) break;
       }
       else
       {
+	//printf("appending %s of size: %u\n", ops->name, 2);
         valuei = single2half(valuef);
         if (!appendToPacket(&pk, &valuei, 2)) break;
       }
     }
     else  //logType is an integer
     {
+      //printf("appending %s of size: %u\n", ops->name, typeLength[ops->logType]);
       if (!appendToPacket(&pk, &valuei, typeLength[ops->logType])) break;
     }
 
@@ -862,6 +869,7 @@ void logRunBlock(void * arg)
   // all the logging and flush all the CRTP queues.
   if (!crtpIsConnected())
   {
+    printf("CRTP Disconnected\n");
     logReset();
     crtpReset();
   }
@@ -940,6 +948,8 @@ void blockAppendOps(struct log_block * block, struct log_ops * ops)
 static void logReset(void)
 {
   int i;
+
+  printf("logReset\n");
 
   if (isInit)
   {

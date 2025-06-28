@@ -82,6 +82,7 @@ bool platformserviceTest(void)
 
 void platformserviceHandler(CRTPPacket *p)
 {
+  printf("platformserviceHandler: channel=%u\n", p->channel);
   switch (p->channel)
   {
     case platformCommand:

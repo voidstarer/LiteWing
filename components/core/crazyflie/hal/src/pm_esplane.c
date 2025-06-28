@@ -360,6 +360,7 @@ void pmTask(void *param)
           //ledseqStop(&seq_charging);
           //ledseqRunBlocking(&seq_charged);
           soundSetEffect(SND_BAT_FULL);
+	  printf("canFly: false due to charged\n");
           systemSetCanFly(false);
           break;
         case charging:
@@ -367,21 +368,25 @@ void pmTask(void *param)
           //ledseqStop(&seq_charged);
           ledseqRunBlocking(&seq_charging);
           soundSetEffect(SND_USB_CONN);
+	  printf("canFly: false due to charging\n");
           systemSetCanFly(false);
           break;
 
         case lowPower:
           ledseqRunBlocking(&seq_lowbat);
           soundSetEffect(SND_BAT_LOW);
+	  printf("canFly: true due to lowPower\n");
           systemSetCanFly(true);
           break;
         case battery:
           //ledseqRunBlocking(&seq_charging);
           //ledseqRun(&seq_charged);
           soundSetEffect(SND_USB_DISC);
+	  printf("canFly: true due to battery\n");
           systemSetCanFly(true);
           break;
         default:
+	  printf("canFly: true due to default\n");
           systemSetCanFly(true);
           break;
       }

@@ -74,6 +74,7 @@ static const uint8_t typeLength[] = {
 
 #define MISC_SETBYNAME 0
 #define MISC_VALUE_UPDATED 1
+#define MISC_REBOOT 0xA
 
 //Private functions
 static void paramTask(void * prm);
@@ -205,6 +206,9 @@ void paramTask(void * prm)
         p.data[1+strlen(group)+1+strlen(name)+1] = error;
         p.size = 1+strlen(group)+1+strlen(name)+1+1;
         crtpSendPacket(&p);
+      } else if (p.data[0] == MISC_REBOOT) {
+	printf("Rebooting\n");
+	esp_restart();
       }
     }
 	}
@@ -506,7 +510,6 @@ static void paramReadProcess()
    	case PARAM_1BYTE:
      		memcpy(&p.data[1], params[id].address, sizeof(uint8_t));
      		p.size = 1+sizeof(uint8_t);
-     		break;
    		break;
       case PARAM_2BYTES:
      		memcpy(&p.data[1], params[id].address, sizeof(uint16_t));

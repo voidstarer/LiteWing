@@ -152,6 +152,10 @@ static float initialZ = 0.0;
 // 3 * PI / 2 --- facing negative Y
 static float initialYaw = 0.0;
 
+// Magnetometer parameters
+static float magNoiseMag = 0.05f; // Magnetometer measurement noise
+static float magDeclination = 0.0f; // Magnetic declination in radians
+
 // Quaternion used for initial yaw
 static float initialQuaternion[4] = {0.0, 0.0, 0.0, 0.0};
 
@@ -563,6 +567,50 @@ void kalmanCoreUpdateWithYawError(kalmanCoreData_t *this, yawErrorMeasurement_t 
     h[KC_STATE_D2] = 1;
     scalarUpdate(this, &H, this->S[KC_STATE_D2] - error->yawError, error->stdDev);
 }
+
+void kalmanCoreUpdateWithMag(kalmanCoreData_t *this, const Axis3f *mag)
+{
+    // Only update if magnetometer readings are valid
+    float magNorm = sqrtf(mag->x * mag->x + mag->y * mag->y + mag->z * mag->z);
+    if (magNorm < 0.1f || magNorm > 1000.0f) {
+        return; // Invalid reading
+    }
+
+    // Get current attitude from quaternion
+    float roll = atan2f(2.0f * (this->q[0] * this->q[1] + this->q[2] * this->q[3]), 
+                        1.0f - 2.0f * (this->q[1] * this->q[1] + this->q[2] * this->q[2]));
+    float pitch = asinf(2.0f * (this->q[0] * this->q[2] - this->q[3] * this->q[1]));
+    
+    // Tilt compensated magnetometer readings
+    float mx = mag->x * cosf(pitch) + mag->z * sinf(pitch);
+    float my = mag->x * sinf(roll) * sinf(pitch) + mag->y * cosf(roll) - mag->z * sinf(roll) * cosf(pitch);
+    
+    // Calculate magnetic heading
+    float magHeading = atan2f(-my, mx);
+    
+    // Add magnetic declination (set via parameter)
+    magHeading += magDeclination;
+    
+    // Get current yaw from quaternion
+    float currentYaw = atan2f(2.0f * (this->q[0] * this->q[3] + this->q[1] * this->q[2]), 
+                              1.0f - 2.0f * (this->q[2] * this->q[2] + this->q[3] * this->q[3]));
+    
+    // Calculate yaw error
+    float yawError = magHeading - currentYaw;
+    
+    // Normalize to [-pi, pi]
+    while (yawError > M_PI) yawError -= 2.0f * M_PI;
+    while (yawError < -M_PI) yawError += 2.0f * M_PI;
+    
+    // Create measurement update for yaw (D2 state)
+    float h[KC_STATE_DIM] = {0};
+    xtensa_matrix_instance_f32 H = {1, KC_STATE_DIM, h};
+    h[KC_STATE_D2] = 1.0f;
+    
+    // Apply update with low noise to make it trust compass more than gyro
+    scalarUpdate(this, &H, yawError, magNoiseMag);
+}
+
 
 //void kalmanCoreUpdateWithSweepAngles(kalmanCoreData_t *this, sweepAngleMeasurement_t *sweepInfo, const uint32_t tick) {
   // Rotate the sensor position from CF reference frame to global reference frame,
@@ -1116,6 +1164,8 @@ PARAM_GROUP_START(kalman)
   PARAM_ADD(PARAM_FLOAT, mNBaro, &measNoiseBaro)
   PARAM_ADD(PARAM_FLOAT, mNGyro_rollpitch, &measNoiseGyro_rollpitch)
   PARAM_ADD(PARAM_FLOAT, mNGyro_yaw, &measNoiseGyro_yaw)
+  PARAM_ADD(PARAM_FLOAT, mNMag, &magNoiseMag)
+  PARAM_ADD(PARAM_FLOAT, magDeclination, &magDeclination)
   PARAM_ADD(PARAM_FLOAT, initialX, &initialX)
   PARAM_ADD(PARAM_FLOAT, initialY, &initialY)
   PARAM_ADD(PARAM_FLOAT, initialZ, &initialZ)

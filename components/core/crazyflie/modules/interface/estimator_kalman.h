@@ -76,6 +76,7 @@ bool estimatorKalmanEnqueueTOF(const tofMeasurement_t *tof);
 bool estimatorKalmanEnqueueAbsoluteHeight(const heightMeasurement_t *height);
 bool estimatorKalmanEnqueueFlow(const flowMeasurement_t *flow);
 bool estimatorKalmanEnqueueYawError(const yawErrorMeasurement_t* error);
+bool estimatorKalmanEnqueueMag(const Axis3f* mag);
 //bool estimatorKalmanEnqueueSweepAngles(const sweepAngleMeasurement_t *angles);
 
 void estimatorKalmanGetEstimatedPos(point_t* pos);
@@ -84,5 +85,10 @@ void estimatorKalmanGetEstimatedPos(point_t* pos);
  * Copies 9 floats representing the current state rotation matrix
  */
 void estimatorKalmanGetEstimatedRot(float * rotationMatrix);
+
+/**
+ * Magnetometer calibration function
+ */
+void estimatorKalmanCalibrateMag(void);
 
 #endif // __ESTIMATOR_KALMAN_H__

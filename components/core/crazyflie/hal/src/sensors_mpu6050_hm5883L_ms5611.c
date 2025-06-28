@@ -72,7 +72,7 @@
  */
 //#define SENSORS_mpu6050_DLPF_256HZ
 
-//#define GYRO_ADD_RAW_AND_VARIANCE_LOG_VALUES
+#define GYRO_ADD_RAW_AND_VARIANCE_LOG_VALUES
 
 #define MAG_GAUSS_PER_LSB 666.7f
 
@@ -80,6 +80,12 @@
  * Enable sensors on board 
  */
 // #define SENSORS_ENABLE_MAG_HM5883L
+#define SENSORS_ENABLE_MAG_QMC5883L
+
+#ifdef SENSORS_ENABLE_MAG_QMC5883L
+#include "qmc5883l.h"
+static qmc5883l_t qmc_dev;
+#endif
 // #define SENSORS_ENABLE_PRESSURE_MS5611
 //#define SENSORS_ENABLE_RANGE_VL53L0X
 #define SENSORS_ENABLE_RANGE_VL53L1X
@@ -181,6 +187,9 @@ static bool isHmc5883lTestPassed = false;
 #endif
 #ifdef SENSORS_ENABLE_PRESSURE_MS5611
 static bool isMs5611TestPassed = false;
+#endif
+#ifdef SENSORS_ENABLE_MAG_QMC5883L
+static bool isQmc5883lTestPassed = false;
 #endif
 
 // Pre-calculated values for accelerometer alignment
@@ -321,7 +330,7 @@ void processBarometerMeasurements(const uint8_t *buffer)
 
 void processMagnetometerMeasurements(const uint8_t *buffer)
 {
-    //TODO: replace it to hmc5883l
+#ifdef SENSORS_ENABLE_MAG_HM5883L
     if (buffer[7] & (1 << HMC5883L_STATUS_READY_BIT)) {
         int16_t headingx = (((int16_t)buffer[2]) << 8) | buffer[1]; //hmc5883 different from
         int16_t headingz = (((int16_t)buffer[4]) << 8) | buffer[3];
@@ -335,6 +344,52 @@ void processMagnetometerMeasurements(const uint8_t *buffer)
 
         DEBUG_PRINTW("hmc5883l DATA not ready");
     }
+#endif
+
+// #define SLAVE_QMC5883L 1 
+#ifdef SENSORS_ENABLE_MAG_QMC5883L
+#ifdef SLAVE_QMC5883L
+    static int qmc_not_ready_count = 0;
+    // QMC5883L: buffer[6] is status, buffer[0..5] are X, Y, Z (LSB, MSB)
+    DEBUG_PRINTI("QMC5883L buffer: [%02X %02X %02X %02X %02X %02X %02X %02X] [%d %d %d %d %d %d %d %d]", 
+        buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5], buffer[6], buffer[7],
+        buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5], buffer[6], buffer[7]);
+    if (buffer[6] & 0x01) { // Data ready
+        int16_t x = ((int16_t)buffer[1] << 8) | buffer[0];
+        int16_t y = ((int16_t)buffer[3] << 8) | buffer[2];
+        int16_t z = ((int16_t)buffer[5] << 8) | buffer[4];
+        // Use the same scaling as qmc5883l_raw_to_mg for 8G range
+        sensorData.mag.x = (float)x * 8000.0f / 32768.0f;
+        sensorData.mag.y = (float)y * 8000.0f / 32768.0f;
+        sensorData.mag.z = (float)z * 8000.0f / 32768.0f;
+        DEBUG_PRINTI("QMC5883L DATA ready");
+        qmc_not_ready_count = 0;
+    } else {
+        DEBUG_PRINTW("QMC5883L DATA not ready");
+        qmc_not_ready_count++;
+        if (qmc_not_ready_count >= 5) {
+            isMagnetometerPresent = false;
+            qmc_not_ready_count = 0;
+        }
+    }
+#else
+    // Direct I2C read of QMC5883L data (bypassing slave mode)
+    bool ready = false;
+    if (qmc5883l_data_ready(&qmc_dev, &ready) && ready) {
+        qmc5883l_raw_data_t raw;
+        if (qmc5883l_get_raw_data(&qmc_dev, &raw)) {
+            sensorData.mag.x = (float)raw.x * 8000.0f / 32768.0f;
+            sensorData.mag.y = (float)raw.y * 8000.0f / 32768.0f;
+            sensorData.mag.z = (float)raw.z * 8000.0f / 32768.0f;
+            DEBUG_PRINTD("QMC5883L direct I2C: X=%d Y=%d Z=%d", raw.x, raw.y, raw.z);
+        } else {
+            DEBUG_PRINTW("QMC5883L direct I2C read failed");
+        }
+    } else {
+        // DEBUG_PRINTW("QMC5883L direct I2C data not ready");
+    }
+#endif
+#endif
 }
 
 void processAccGyroMeasurements(const uint8_t *buffer)
@@ -481,6 +536,44 @@ static void sensorsDeviceInit(void)
     }
 
 #endif
+
+#ifdef SENSORS_ENABLE_MAG_QMC5883L
+    if (qmc5883l_init_desc(&qmc_dev, I2C0_DEV, QMC5883L_I2C_ADDR_DEF)) {
+        // Set default config: 50Hz, 512 OSR, 8G range
+        qmc5883l_reset(&qmc_dev);
+        vTaskDelay(M2T(10)); // Wait for the device to reset
+        // qmc5883l_set_config(&qmc_dev, QMC5883L_DR_100, QMC5883L_OSR_512, QMC5883L_RNG_8);
+        qmc5883l_set_config(&qmc_dev, QMC5883L_DR_50, QMC5883L_OSR_512, QMC5883L_RNG_8);
+        qmc5883l_set_mode(&qmc_dev, QMC5883L_MODE_CONTINUOUS);
+        vTaskDelay(M2T(10)); // Wait for the device to reset
+        isMagnetometerPresent = true;
+        // Debug: Check QMC5883L ID and print raw data
+        uint8_t id = 0;
+        if (qmc5883l_get_chip_id(&qmc_dev, &id)) {
+            DEBUG_PRINTI("QMC5883L ID: 0x%02X\n", id);
+            bool ready = false;
+            if (qmc5883l_data_ready(&qmc_dev, &ready) && ready) {
+                DEBUG_PRINTI("QMC5883L data ready\n");
+            } else {
+                DEBUG_PRINTW("QMC5883L data not ready\n");
+            }
+            qmc5883l_raw_data_t raw;
+            if (qmc5883l_get_raw_data(&qmc_dev, &raw)) {
+                DEBUG_PRINTI("QMC5883L Raw: X=%d Y=%d Z=%d\n", raw.x, raw.y, raw.z);
+            } else {
+                DEBUG_PRINTW("Failed to read QMC5883L raw data\n");
+            }
+            DEBUG_PRINTI("QMC5883L I2C connection [OK].\n");
+        } else {
+            isMagnetometerPresent = false;
+            DEBUG_PRINTW("Failed to read QMC5883L chip ID\n");
+        }
+    }
+    if(!isMagnetometerPresent) {
+        DEBUG_PRINTW("QMC5883L I2C connection [FAIL].\n");
+    }
+#endif
+
 #ifdef SENSORS_ENABLE_PRESSURE_MS5611
     ms5611Init(I2C0_DEV);
 
@@ -512,6 +605,7 @@ static void sensorsDeviceInit(void)
 
     if (zRangerTest() == true) {
         isVl53l0xPresent = true;
+        setCommandermode(POSHOLD_MODE); // Set commander mode to allow rangefinder commands
         DEBUG_PRINTI("VL53L0X I2C connection [OK].\n");
     } else {
         //TODO: Should sensor test fail hard if no connection
@@ -525,7 +619,7 @@ static void sensorsDeviceInit(void)
 
     if (flowdeck2Test() == true) {
         isPmw3901Present = true;
-        setCommandermode(POSHOLD_MODE);
+        setCommandermode(POSSET_MODE);
         DEBUG_PRINTI("PMW3901 SPI connection [OK].\n");
     } else {
         //TODO: Should sensor test fail hard if no connection
@@ -546,6 +640,8 @@ static void sensorsDeviceInit(void)
     cosRoll = cosf(ROLL_CALIB * (float)M_PI / 180);
     sinRoll = sinf(ROLL_CALIB * (float)M_PI / 180);
     DEBUG_PRINTI("pitch_calib = %f,roll_calib = %f",PITCH_CALIB,ROLL_CALIB);
+    DEBUG_PRINTI("cosPitch = %f,sinPitch = %f", cosPitch, sinPitch);
+    DEBUG_PRINTI("cosRoll = %f,sinRoll = %f", cosRoll, sinRoll);
 }
 
 static void sensorsSetupSlaveRead(void)
@@ -569,17 +665,28 @@ static void sensorsSetupSlaveRead(void)
     mpu6050SetMasterClockSpeed(13);                   // Set i2c speed to 400kHz
 
 #ifdef SENSORS_ENABLE_MAG_HM5883L
-
     if (isMagnetometerPresent) {
         // Set registers for mpu6050 master to read from
         mpu6050SetSlaveAddress(0, 0x80 | HMC5883L_ADDRESS);        // set the magnetometer to Slave 0, enable read
         mpu6050SetSlaveRegister(0, HMC5883L_RA_MODE);       // read the magnetometer heading register
-        mpu6050SetSlaveDataLength(0, SENSORS_MAG_BUFF_LEN); // hmc5883l:model,x,z,y,status ak8963:read 8 bytes (ST1, x, y, z heading, ST2 (overflow check))
+        mpu6050SetSlaveDataLength(0, SENSORS_MAG_BUFF_LEN); // hmc5883l:model,x,clez,y,status ak8963:read 8 bytes (ST1, x, y, z heading, ST2 (overflow check))
         mpu6050SetSlaveDelayEnabled(0, true);
         mpu6050SetSlaveEnabled(0, true);
         DEBUG_PRINTD("mpu6050SetSlaveAddress HMC5883L done \n");
     }
+#endif
 
+#ifdef SENSORS_ENABLE_MAG_QMC5883L
+    if (isMagnetometerPresent) {
+        #ifdef SLAVE_QMC5883L
+        mpu6050SetSlaveAddress(0, 0x80 | QMC5883L_I2C_ADDR_DEF);
+        mpu6050SetSlaveRegister(0, 0x00); // QMC5883L X LSB register
+        mpu6050SetSlaveDataLength(0, 6); // 6 bytes for XYZ, 1 for status, 1 for temp
+        mpu6050SetSlaveDelayEnabled(0, true);
+        mpu6050SetSlaveEnabled(0, true);
+        DEBUG_PRINTI("mpu6050SetSlaveAddress QMC5883L done \n");
+        #endif
+    }
 #endif
 
 #ifdef SENSORS_ENABLE_PRESSURE_MS5611
@@ -712,7 +819,19 @@ bool sensorsMpu6050Hmc5883lMs5611Test(void)
         isHmc5883lTestPassed = hmc5883lSelfTest();
         testStatus &= isHmc5883lTestPassed;
     }
+#endif
 
+#ifdef SENSORS_ENABLE_MAG_QMC5883L
+    testStatus &= isMagnetometerPresent;
+    if (testStatus) {
+        bool ready = false;
+        if (qmc5883l_data_ready(&qmc_dev, &ready) && ready) {
+            isQmc5883lTestPassed = true;
+        } else {
+            isQmc5883lTestPassed = false;
+        }
+        testStatus &= isQmc5883lTestPassed;
+    }
 #endif
 
 #ifdef SENSORS_ENABLE_PRESSURE_MS5611
@@ -1036,7 +1155,7 @@ static void applyAxis3fLpf(lpf2pData *data, Axis3f *in)
 }
 
 #ifdef GYRO_ADD_RAW_AND_VARIANCE_LOG_VALUES
-LOG_GROUP_START(gyro)
+LOG_GROUP_START(gyroRaw)
 LOG_ADD(LOG_INT16, xRaw, &gyroRaw.x)
 LOG_ADD(LOG_INT16, yRaw, &gyroRaw.y)
 LOG_ADD(LOG_INT16, zRaw, &gyroRaw.z)
@@ -1058,3 +1177,4 @@ PARAM_ADD(PARAM_UINT8 | PARAM_RONLY, HMC5883L, &isMagnetometerPresent)
 PARAM_ADD(PARAM_UINT8 | PARAM_RONLY, pmw3901, &isPmw3901Present)
 PARAM_ADD(PARAM_UINT8 | PARAM_RONLY, MS5611, &isBarometerPresent) // TODO: Rename MS5611 to LPS25H. Client needs to be updated at the same time.
 PARAM_GROUP_STOP(imu_tests)
+

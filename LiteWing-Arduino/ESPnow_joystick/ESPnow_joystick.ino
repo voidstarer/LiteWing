@@ -8,7 +8,7 @@
 #define LED_PIN 2 // Define the onboard LED pin for ESP32
 
 // Transmitter MAC Address - REPLACE WITH YOUR DRONE'S MAC ADDRESS
-uint8_t transmitterMacAddress[] = {0xF0, 0x9E, 0x9E, 0x29, 0x5C, 0xF8};
+uint8_t transmitterMacAddress[] = {0xa0, 0x85, 0xe3, 0xed, 0xad, 0x08};
 
 // Data structure for joystick control (what we send)
 typedef struct joystick_data {

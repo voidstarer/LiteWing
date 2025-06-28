@@ -1,0 +1,5 @@
+Doxyfile
+html
+build
+dependencies.lock
+managed_components

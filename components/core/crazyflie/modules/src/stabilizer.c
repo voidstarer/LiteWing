@@ -653,11 +653,11 @@ LOG_ADD(LOG_FLOAT, z, &sensorData.gyroSec.z)
 LOG_GROUP_STOP(gyroSec)
 #endif
 
-LOG_GROUP_START(mag)
+LOG_GROUP_START(magS)
 LOG_ADD(LOG_FLOAT, x, &sensorData.mag.x)
 LOG_ADD(LOG_FLOAT, y, &sensorData.mag.y)
 LOG_ADD(LOG_FLOAT, z, &sensorData.mag.z)
-LOG_GROUP_STOP(mag)
+LOG_GROUP_STOP(magS)
 
 LOG_GROUP_START(controller)
 LOG_ADD(LOG_INT16, ctr_yaw, &control.yaw)

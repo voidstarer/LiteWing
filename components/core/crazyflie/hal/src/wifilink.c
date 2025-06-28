@@ -167,6 +167,13 @@ static int wifilinkSendPacket(CRTPPacket *p)
 {
     ASSERT(p->size <= CRTP_MAX_DATA_SIZE);
     ledseqRun(&seq_linkDown);
+#if 0
+    printf("SendPacket: ");
+    for(int i=0; i < p->size; i++) {
+	    printf("%02x ", p->raw[i]);
+    }
+    printf("\n");
+#endif
     return wifiSendData(p->size + 1, p->raw);
 }
 

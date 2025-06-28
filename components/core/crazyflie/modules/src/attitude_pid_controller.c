@@ -33,9 +33,9 @@
 #include "log.h"
 
 #define ATTITUDE_LPF_CUTOFF_FREQ      15.0f
-#define ATTITUDE_LPF_ENABLE false
-#define ATTITUDE_RATE_LPF_CUTOFF_FREQ 30.0f
-#define ATTITUDE_RATE_LPF_ENABLE false
+#define ATTITUDE_LPF_ENABLE true
+#define ATTITUDE_RATE_LPF_CUTOFF_FREQ 20.0f
+#define ATTITUDE_RATE_LPF_ENABLE true
 
 
 static inline int16_t saturateSignedInt16(float in)
