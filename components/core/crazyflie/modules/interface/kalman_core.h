@@ -128,18 +128,18 @@ void kalmanCoreUpdateWithTof(kalmanCoreData_t* this, tofMeasurement_t *tof);
 // Measurement of yaw error (outside measurement Vs current estimation)
 void kalmanCoreUpdateWithYawError(kalmanCoreData_t *this, yawErrorMeasurement_t *error);
 
-// Measurement of magnetometer for yaw correction
-void kalmanCoreUpdateWithMag(kalmanCoreData_t *this, const Axis3f *mag);
+// Measurement update using magnetometer for yaw correction
+void kalmanCoreUpdateWithMagnetometer(kalmanCoreData_t *this, const Axis3f *mag, const Axis3f *acc);
 
-// Measurement of sweep angles from a Lighthouse base station
-//void kalmanCoreUpdateWithSweepAngles(kalmanCoreData_t *this, sweepAngleMeasurement_t *angles, const uint32_t tick);
+// Helper function to calculate heading from magnetometer and accelerometer
+float kalmanCoreGetHeading(const Axis3f *mag, const Axis3f *acc);
 
 /**
  * Primary Kalman filter functions
  *
  * The filter progresses as:
  *  - Predicting the current state forward */
-void kalmanCorePredict(kalmanCoreData_t* this, float thrust, Axis3f *acc, Axis3f *gyro, float dt, bool quadIsFlying);
+void kalmanCorePredict(kalmanCoreData_t* this, float thrust, Axis3f *acc, Axis3f *gyro, Axis3f *mag, float dt, bool quadIsFlying);
 
 void kalmanCoreAddProcessNoise(kalmanCoreData_t* this, float dt);
 
@@ -150,5 +150,8 @@ void kalmanCoreFinalize(kalmanCoreData_t* this, uint32_t tick);
 void kalmanCoreExternalizeState(const kalmanCoreData_t* this, state_t *state, const Axis3f *acc, uint32_t tick);
 
 void kalmanCoreDecoupleXY(kalmanCoreData_t* this);
+
+// Function to set initial yaw before initialization
+void kalmanCoreSetInitialYaw(float yawRadians);
 
 #endif // __KALMAN_CORE_H__

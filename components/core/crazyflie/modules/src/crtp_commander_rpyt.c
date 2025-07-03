@@ -170,7 +170,7 @@ void crtpCommanderRpytDecodeSetpoint(setpoint_t *setpoint, CRTPPacket *pk)
     thrustLocked = false;
   }
 
-#if 1
+#if 0
   printf("RPYT: Roll=%.2f Pitch=%.2f Yaw=%.2f Thrust=%u thrustLocked=%u\n",
 		  values->roll, values->pitch, values->yaw, values->thrust, thrustLocked);
 #endif

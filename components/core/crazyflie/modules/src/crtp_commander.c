@@ -111,7 +111,7 @@ const static metaCommandDecoder_t metaCommandDecoders[] = {
 static void commanderCrtpCB(CRTPPacket* pk)
 {
   static setpoint_t setpoint;
-  printf("commanderCrtpCB: called with port %u and channel %u\n", pk->port, pk->channel);
+  // printf("commanderCrtpCB: called with port %u and channel %u\n", pk->port, pk->channel);
   if(pk->port == CRTP_PORT_SETPOINT && pk->channel == 0) {
     crtpCommanderRpytDecodeSetpoint(&setpoint, pk);
     commanderSetSetpoint(&setpoint, COMMANDER_PRIORITY_CRTP);

@@ -66,6 +66,7 @@ static bool read_reg(qmc5883l_t *dev, uint8_t reg, uint8_t *val) {
 bool qmc5883l_init_desc(qmc5883l_t *dev, I2C_Dev *i2c_dev, uint8_t addr) {
     if (!dev || !i2c_dev) return false;
     dev->i2c_dev = i2c_dev;
+    i2cdevInit(dev->i2c_dev);
     dev->addr = addr;
     dev->range = QMC5883L_RNG_2;
     return true;
@@ -163,4 +164,134 @@ bool qmc5883l_get_data(qmc5883l_t *dev, qmc5883l_data_t *data) {
 bool qmc5883l_get_raw_temp(qmc5883l_t *dev, int16_t *temp) {
     if (!dev || !temp) return false;
     return i2cdevReadReg8(dev->i2c_dev, dev->addr, REG_TOUT_L, 2, (uint8_t *)temp);
+}
+
+/* ---------- calibration fuctions ---------- */
+// Calibration routines for QMC5883L
+#include <math.h>
+void qmc5883l_hardiron_calibration(qmc5883l_t *dev, void (*printfn)(const char*, ...), uint16_t seconds) {
+    if (!dev) return;
+    if (printfn) printfn("QMC5883L standalone test: starting 30s Hard-Iron calibration...\n");
+    // Sleep for 3 seconds before calibration
+    vTaskDelay(3000 / portTICK_PERIOD_MS);
+
+    int32_t x_min = 32767, x_max = -32768;
+    int32_t y_min = 32767, y_max = -32768;
+    int32_t z_min = 32767, z_max = -32768;
+    const int calib_ms = seconds * 1000;
+    int elapsed = 0;
+    while (elapsed < calib_ms) {
+        bool ready = false;
+        if (qmc5883l_data_ready(dev, &ready) && ready) {
+            qmc5883l_raw_data_t raw = {0};
+            if (qmc5883l_get_raw_data(dev, &raw)) {
+                if (raw.x < x_min) x_min = raw.x;
+                if (raw.x > x_max) x_max = raw.x;
+                if (raw.y < y_min) y_min = raw.y;
+                if (raw.y > y_max) y_max = raw.y;
+                if (raw.z < z_min) z_min = raw.z;
+                if (raw.z > z_max) z_max = raw.z;
+            }
+        }
+        vTaskDelay(50 / portTICK_PERIOD_MS);
+        elapsed += 50;
+    }
+    dev->x_offset = (x_max + x_min) / 2.0f;
+    dev->y_offset = (y_max + y_min) / 2.0f;
+    dev->z_offset = (z_max + z_min) / 2.0f;
+    if (printfn) printfn("Calibration SI: X=%.1f Y=%.1f Z=%.1f\n", dev->x_offset, dev->y_offset, dev->z_offset);
+}
+
+int qmc5883l_softiron_calibration(qmc5883l_t *dev, void (*printfn)(const char*, ...), uint16_t seconds) {
+    if (!dev) return -1;
+    if (printfn) printfn("QMC5883L: starting soft-iron calib (ellipse fit)...\n");
+    // Sleep for 3 seconds before calibration
+    vTaskDelay(3000 / portTICK_PERIOD_MS);
+
+    const int max_samples = 512;
+    int16_t x_samples[max_samples];
+    int16_t y_samples[max_samples];
+    int n = 0;
+    const int calib_ms = seconds * 1000;
+    int elapsed = 0;
+    while (elapsed < calib_ms && n < max_samples) {
+        bool ready = false;
+        if (qmc5883l_data_ready(dev, &ready) && ready) {
+            qmc5883l_raw_data_t raw = {0};
+            if (qmc5883l_get_raw_data(dev, &raw)) {
+                x_samples[n] = raw.x;
+                y_samples[n] = raw.y;
+                n++;
+            }
+        }
+        vTaskDelay(50 / portTICK_PERIOD_MS);
+        elapsed += 50;
+    }
+    if (n < 10) {
+        if (printfn) printfn("Not enough samples for soft-iron calibration!\n");
+        dev->scale_x = 1.0f;
+        dev->scale_y = 1.0f;
+        dev->theta = 0.0f;
+        return -1;
+    }
+
+    float x_mean = 0, y_mean = 0;
+    for (int i = 0; i < n; i++) {
+        x_mean += x_samples[i];
+        y_mean += y_samples[i];
+    }
+    x_mean /= n;
+    y_mean /= n;
+
+    float Sxx = 0, Syy = 0, Sxy = 0;
+    for (int i = 0; i < n; i++) {
+        float dx = x_samples[i] - x_mean;
+        float dy = y_samples[i] - y_mean;
+        Sxx += dx * dx;
+        Syy += dy * dy;
+        Sxy += dx * dy;
+    }
+    Sxx /= n;
+    Syy /= n;
+    Sxy /= n;
+
+    float theta_est = 0.5f * atan2f(2 * Sxy, Sxx - Syy);
+
+    float ct = cosf(theta_est);
+    float st = sinf(theta_est);
+    float S1 = Sxx * ct * ct + 2 * Sxy * ct * st + Syy * st * st;
+    float S2 = Sxx * st * st - 2 * Sxy * ct * st + Syy * ct * ct;
+    float a = sqrtf(S1);
+    float b = sqrtf(S2);
+    if (a < b) { float tmp = a; a = b; b = tmp; theta_est += (float)M_PI_2; }
+    if (b < 1e-6f) b = 1.0f;
+
+    dev->scale_x = 1.0f;
+    dev->scale_y = a / b;
+    dev->theta = theta_est;
+    // if (printfn) printfn("Soft-iron. Scale X=%.3f, Y=%.3f, %.2f\n", dev->scale_x, dev->scale_y, dev->theta * 180.0f / (float)M_PI);
+    return 0;
+}
+
+// Read and apply calibration to QMC5883L magnetometer
+// Returns true if new data was read and outputs are updated
+bool qmc5883l_read_mag(qmc5883l_t *dev, float *x_cal, float *y_cal, float *z_cal) {
+    if (!dev || !x_cal || !y_cal || !z_cal) return false;
+    bool mag_ready = false;
+    if (qmc5883l_data_ready(dev, &mag_ready) && mag_ready) {
+        qmc5883l_raw_data_t mag_raw = {0};
+        if (qmc5883l_get_raw_data(dev, &mag_raw)) {
+            // Hard-iron correction
+            float x_corr = mag_raw.x - dev->x_offset;
+            float y_corr = mag_raw.y - dev->y_offset;
+            float z_corr = mag_raw.z - dev->z_offset;
+            // Soft-iron correction (2D)
+            float cos_t = cosf(dev->theta), sin_t = sinf(dev->theta);
+            *x_cal = dev->scale_x * (cos_t * x_corr + sin_t * y_corr);
+            *y_cal = dev->scale_y * (-sin_t * x_corr + cos_t * y_corr);
+            *z_cal = z_corr; // No soft-iron correction for Z
+            return true;
+        }
+    }
+    return false;
 }

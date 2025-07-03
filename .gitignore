@@ -3,3 +3,4 @@ html
 build
 dependencies.lock
 managed_components
+crtp-sniffer

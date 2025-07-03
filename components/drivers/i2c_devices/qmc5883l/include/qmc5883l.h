@@ -116,6 +116,13 @@ typedef struct {
     I2C_Dev *i2c_dev;  // Pointer to I2C device from i2cdev.h
     uint8_t addr;      // I2C address
     uint8_t range;     // Field range
+    // Calibration parameters
+    float x_offset;
+    float y_offset;
+    float z_offset;
+    float scale_x;
+    float scale_y;
+    float theta;
 } qmc5883l_t;
 
 /**
@@ -264,5 +271,21 @@ bool qmc5883l_get_raw_temp(qmc5883l_t *dev, int16_t *temp);
 #endif
 
 /**@}*/
+#include <stddef.h>
+
+// Calibration routines for QMC5883L
+void qmc5883l_hardiron_calibration(qmc5883l_t *dev, void (*printfn)(const char*, ...), uint16_t seconds);
+int qmc5883l_softiron_calibration(qmc5883l_t *dev, void (*printfn)(const char*, ...), uint16_t seconds);
+
+/**
+ * @brief Read and apply calibration to QMC5883L magnetometer
+ *
+ * @param dev Device descriptor
+ * @param[out] x_cal Calibrated X value
+ * @param[out] y_cal Calibrated Y value
+ * @param[out] z_cal Calibrated Z value
+ * @return true if new data was read and outputs are updated, false otherwise
+ */
+bool qmc5883l_read_mag(qmc5883l_t *dev, float *x_cal, float *y_cal, float *z_cal);
 
 #endif /* __QMC5883L_H__ */

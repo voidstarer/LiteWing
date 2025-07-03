@@ -50,6 +50,13 @@ void app_main()
 
     ESP_ERROR_CHECK(ret);
 
+#if 0
+/* Standalone QMC5883L test before platformInit */
+    extern void test_qmc5883l(void);
+    test_qmc5883l();
+    return;
+#endif
+
     /*Initialize the platform.*/
     if (platformInit() == false) {
         while (1);//if  firmware is running on the wrong hardware, Halt

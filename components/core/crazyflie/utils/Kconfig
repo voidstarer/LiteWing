@@ -1,0 +1,10 @@
+menu "Magnetometer Configuration"
+    config MAG_MOUNTING_ANGLE_DEG
+        int "Magnetometer mounting angle in degrees"
+        default -90
+        range -180 180
+        help
+            Magnetometer mounting angle in degrees relative to drone coordinate system.
+            -90 means mag X-axis points to drone Y-axis, mag Y-axis points to drone -X-axis.
+            
+endmenu

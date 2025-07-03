@@ -65,6 +65,7 @@
 #include "debug_cf.h"
 #include "static_mem.h"
 #include "crtp_commander.h"
+#include "mag_utils.h"
 
 /**
  * Enable 250Hz digital LPF mode. However does not work with
@@ -81,6 +82,7 @@
  */
 // #define SENSORS_ENABLE_MAG_HM5883L
 #define SENSORS_ENABLE_MAG_QMC5883L
+static float qmc_heading;
 
 #ifdef SENSORS_ENABLE_MAG_QMC5883L
 #include "qmc5883l.h"
@@ -280,6 +282,7 @@ static void sensorsTask(void *param)
 
             if (isMagnetometerPresent) {
                 processMagnetometerMeasurements(&(buffer[SENSORS_MPU6050_BUFF_LEN]));
+
             }
 
             if (isBarometerPresent) {
@@ -328,6 +331,11 @@ void processBarometerMeasurements(const uint8_t *buffer)
 //   sensorData.baro.asl = lps25hPressureToAltitude(&sensorData.baro.pressure);
 }
 
+static float get_heading(float mx, float my, float mz, float ax, float ay, float az) {
+    // Use shared magnetometer heading calculation function with mounting angle from sdkconfig
+    return mag_calculate_heading(mx, my, mz, ax, ay, az, mag_get_mounting_angle());
+}
+
 void processMagnetometerMeasurements(const uint8_t *buffer)
 {
 #ifdef SENSORS_ENABLE_MAG_HM5883L
@@ -339,7 +347,9 @@ void processMagnetometerMeasurements(const uint8_t *buffer)
         sensorData.mag.x = (float)headingx / MAG_GAUSS_PER_LSB; //to gauss
         sensorData.mag.y = (float)headingy / MAG_GAUSS_PER_LSB;
         sensorData.mag.z = (float)headingz / MAG_GAUSS_PER_LSB;
-        DEBUG_PRINTI("hmc5883l DATA ready");
+        qmc_heading = get_heading(sensorData.mag.x, sensorData.mag.y, sensorData.mag.z,
+                                  sensorData.acc.x, sensorData.acc.y, sensorData.acc.z);
+        DEBUG_PRINTD("hmc5883l DATA ready, heading: %.2f deg", qmc_heading);
     } else {
 
         DEBUG_PRINTW("hmc5883l DATA not ready");
@@ -348,47 +358,41 @@ void processMagnetometerMeasurements(const uint8_t *buffer)
 
 // #define SLAVE_QMC5883L 1 
 #ifdef SENSORS_ENABLE_MAG_QMC5883L
-#ifdef SLAVE_QMC5883L
-    static int qmc_not_ready_count = 0;
-    // QMC5883L: buffer[6] is status, buffer[0..5] are X, Y, Z (LSB, MSB)
-    DEBUG_PRINTI("QMC5883L buffer: [%02X %02X %02X %02X %02X %02X %02X %02X] [%d %d %d %d %d %d %d %d]", 
-        buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5], buffer[6], buffer[7],
-        buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5], buffer[6], buffer[7]);
-    if (buffer[6] & 0x01) { // Data ready
-        int16_t x = ((int16_t)buffer[1] << 8) | buffer[0];
-        int16_t y = ((int16_t)buffer[3] << 8) | buffer[2];
-        int16_t z = ((int16_t)buffer[5] << 8) | buffer[4];
-        // Use the same scaling as qmc5883l_raw_to_mg for 8G range
-        sensorData.mag.x = (float)x * 8000.0f / 32768.0f;
-        sensorData.mag.y = (float)y * 8000.0f / 32768.0f;
-        sensorData.mag.z = (float)z * 8000.0f / 32768.0f;
-        DEBUG_PRINTI("QMC5883L DATA ready");
-        qmc_not_ready_count = 0;
-    } else {
-        DEBUG_PRINTW("QMC5883L DATA not ready");
-        qmc_not_ready_count++;
-        if (qmc_not_ready_count >= 5) {
-            isMagnetometerPresent = false;
+    #ifdef SLAVE_QMC5883L
+        static int qmc_not_ready_count = 0;
+        // QMC5883L: buffer[6] is status, buffer[0..5] are X, Y, Z (LSB, MSB)
+        DEBUG_PRINTI("QMC5883L buffer: [%02X %02X %02X %02X %02X %02X %02X %02X] [%d %d %d %d %d %d %d %d]", 
+            buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5], buffer[6], buffer[7],
+            buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5], buffer[6], buffer[7]);
+        if (buffer[6] & 0x01) { // Data ready
+            int16_t x = ((int16_t)buffer[1] << 8) | buffer[0];
+            int16_t y = ((int16_t)buffer[3] << 8) | buffer[2];
+            int16_t z = ((int16_t)buffer[5] << 8) | buffer[4];
+            // Use the same scaling as qmc5883l_raw_to_mg for 8G range
+            sensorData.mag.x = (float)x * 8000.0f / 32768.0f;
+            sensorData.mag.y = (float)y * 8000.0f / 32768.0f;
+            sensorData.mag.z = (float)z * 8000.0f / 32768.0f;
+            DEBUG_PRINTI("QMC5883L DATA ready");
             qmc_not_ready_count = 0;
-        }
-    }
-#else
-    // Direct I2C read of QMC5883L data (bypassing slave mode)
-    bool ready = false;
-    if (qmc5883l_data_ready(&qmc_dev, &ready) && ready) {
-        qmc5883l_raw_data_t raw;
-        if (qmc5883l_get_raw_data(&qmc_dev, &raw)) {
-            sensorData.mag.x = (float)raw.x * 8000.0f / 32768.0f;
-            sensorData.mag.y = (float)raw.y * 8000.0f / 32768.0f;
-            sensorData.mag.z = (float)raw.z * 8000.0f / 32768.0f;
-            DEBUG_PRINTD("QMC5883L direct I2C: X=%d Y=%d Z=%d", raw.x, raw.y, raw.z);
         } else {
-            DEBUG_PRINTW("QMC5883L direct I2C read failed");
+            DEBUG_PRINTW("QMC5883L DATA not ready");
+            qmc_not_ready_count++;
+            if (qmc_not_ready_count >= 5) {
+                isMagnetometerPresent = false;
+                qmc_not_ready_count = 0;
+            }
         }
-    } else {
-        // DEBUG_PRINTW("QMC5883L direct I2C data not ready");
-    }
-#endif
+    #else
+        float latest_x_cal = 0, latest_y_cal = 0, latest_z_cal = 0;
+        if(qmc5883l_read_mag(&qmc_dev, &latest_x_cal, &latest_y_cal, &latest_z_cal)) {
+            sensorData.mag.x = latest_x_cal;
+            sensorData.mag.y = latest_y_cal;
+            sensorData.mag.z = latest_z_cal;
+            qmc_heading = get_heading(sensorData.mag.x, sensorData.mag.y, sensorData.mag.z,
+                    sensorData.acc.x, sensorData.acc.y, sensorData.acc.z);
+            DEBUG_PRINTD("QMC5883L DATA ready, heading: %.2f deg", qmc_heading);
+        }
+    #endif
 #endif
 }
 
@@ -466,10 +470,18 @@ static void sensorsDeviceInit(void)
     i2cdevInit(I2C0_DEV);
     mpu6050Init(I2C0_DEV);
 
-    if (mpu6050TestConnection() == true) {
-        DEBUG_PRINTI("MPU6050 I2C connection [OK].\n");
-    } else {
-        DEBUG_PRINTE("MPU6050 I2C connection [FAIL].\n");
+    bool mpu6050Connected = false;
+    for (int retry = 0; retry < 2; retry++) {
+        if (mpu6050TestConnection() == true) {
+            DEBUG_PRINTI("MPU6050 I2C connection [OK].\n");
+            mpu6050Connected = true;
+            break;
+        } else {
+            DEBUG_PRINTE("MPU6050 I2C connection [FAIL], retry %d...\n", retry + 1);
+            vTaskDelay(M2T(1000)); // Wait 1 second before retrying
+        }
+    }
+    if (!mpu6050Connected) {
         // Please check your hardware !
         assert(0);
     }
@@ -559,9 +571,36 @@ static void sensorsDeviceInit(void)
             }
             qmc5883l_raw_data_t raw;
             if (qmc5883l_get_raw_data(&qmc_dev, &raw)) {
-                DEBUG_PRINTI("QMC5883L Raw: X=%d Y=%d Z=%d\n", raw.x, raw.y, raw.z);
+                // Calculate heading in degrees from raw magnetometer values
+                float headingRad = atan2f((float)raw.y, (float)raw.x);
+                float headingDeg = headingRad * 180.0f / (float)M_PI;
+                if (headingDeg < 0) headingDeg += 360.0f;
+                DEBUG_PRINTI("QMC5883L Raw: X=%d Y=%d Z=%d, heading: %.2f deg\n", raw.x, raw.y, raw.z, headingDeg);
             } else {
                 DEBUG_PRINTW("Failed to read QMC5883L raw data\n");
+            }
+            bool enable_calibration = false; // Set to true to perform calibration
+            if (enable_calibration) {
+                qmc5883l_hardiron_calibration(&qmc_dev, NULL, 30);
+                qmc5883l_softiron_calibration(&qmc_dev, NULL, 30);
+            } else {
+                // Hardcoded calibration values from previous run
+                qmc_dev.x_offset = -8386.0f;
+                qmc_dev.y_offset = -4650.5f;
+                qmc_dev.z_offset = -183.0f;
+                qmc_dev.scale_x = 1.0f;
+                qmc_dev.scale_y = 1.297f;
+                qmc_dev.theta = 45.75f * (float)M_PI / 180.0f; // Convert degrees to radians
+                /*
+                qmc_dev.x_offset = 1832.0f;
+                qmc_dev.y_offset = -3054.5f;
+                qmc_dev.z_offset = 1543.0f;
+                qmc_dev.scale_x = 1.000f;
+                qmc_dev.scale_y = 1.130f;
+                qmc_dev.theta = -73.09f * (float)M_PI / 180.0f; // Convert degrees to radians
+                */
+                DEBUG_PRINTI("QMC5883L standalone test: calibration disabled. Using hardcoded offsets: X=%.1f Y=%.1f Z=%.1f, scale_x=%.3f, scale_y=%.3f, theta=%.2f deg\n",
+                    qmc_dev.x_offset, qmc_dev.y_offset, qmc_dev.z_offset, qmc_dev.scale_x, qmc_dev.scale_y, qmc_dev.theta * 180.0f / (float)M_PI);
             }
             DEBUG_PRINTI("QMC5883L I2C connection [OK].\n");
         } else {
@@ -1164,6 +1203,10 @@ LOG_ADD(LOG_FLOAT, yVariance, &gyroBiasRunning.variance.y)
 LOG_ADD(LOG_FLOAT, zVariance, &gyroBiasRunning.variance.z)
 LOG_GROUP_STOP(gyro)
 #endif
+
+LOG_GROUP_START(qmc)
+LOG_ADD(LOG_FLOAT, heading, &qmc_heading)
+LOG_GROUP_STOP(qmc)
 
 //TODO:
 PARAM_GROUP_START(imu_sensors)

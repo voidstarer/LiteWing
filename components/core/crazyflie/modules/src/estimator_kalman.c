@@ -210,6 +210,10 @@ static StaticSemaphore_t dataMutexBuffer;
 #define MAX_COVARIANCE (100)
 #define MIN_COVARIANCE (1e-6f)
 
+// Magnetometer update parameters
+static uint32_t magUpdateDivider = 2; // Process every 2nd cycle
+static uint32_t minMagUpdateIntervalMs = 15; // Minimum interval between updates
+
 
 
 /**
@@ -242,22 +246,6 @@ static uint32_t gyroAccumulatorCount;
 static uint32_t magAccumulatorCount;
 static uint32_t baroAccumulatorCount;
 
-// Magnetometer calibration data
-static struct {
-  float offsetX, offsetY, offsetZ;
-  float scaleX, scaleY, scaleZ;
-  bool isCalibrated;
-  float declination; // Magnetic declination in radians
-} magCalibration = {
-  .offsetX = 0.0f, .offsetY = 0.0f, .offsetZ = 0.0f,
-  .scaleX = 1.0f, .scaleY = 1.0f, .scaleZ = 1.0f,
-  .isCalibrated = false,
-  .declination = 0.0f
-};
-
-// Calibration trigger
-static uint8_t triggerMagCalibration = 0;
-
 static bool quadIsFlying = false;
 static uint32_t lastFlightCmd;
 static uint32_t takeoffTime;
@@ -288,9 +276,13 @@ static const bool useBaroUpdate = true;
 static const bool useBaroUpdate = false;
 #endif
 
+// Parameter to control whether to use magnetometer for initial yaw
+static bool useMagYawInit = true;
+
 static void kalmanTask(void* parameters);
 static bool predictStateForward(uint32_t osTick, float dt);
 static bool updateQueuedMeasurments(const Axis3f *gyro, const uint32_t tick);
+static void initializeYawFromMagnetometer(void);
 
 STATIC_MEM_TASK_ALLOC_STACK_NO_DMA_CCM_SAFE(kalmanTask, KALMAN_TASK_STACKSIZE);
 
@@ -334,16 +326,18 @@ static void kalmanTask(void* parameters) {
 
   while (true) {
     xSemaphoreTake(runTaskSemaphore, portMAX_DELAY);
-    // Check for magnetometer calibration trigger
-    if (triggerMagCalibration) {
-      magCalibration.isCalibrated = false;
-      triggerMagCalibration = 0;
-      estimatorKalmanCalibrateMag();
-    }
+
     // If the client triggers an estimator reset via parameter update
     if (coreData.resetEstimation) {
+      DEBUG_PRINT("Kalman estimator reset triggered\n");
+      
+      // Initialize yaw from magnetometer before reset to get accurate initial attitude
+      initializeYawFromMagnetometer();
+      
       estimatorKalmanInit();
       paramSetInt(paramGetVarId("kalman", "resetEstimation"), 0);
+      
+      DEBUG_PRINT("Kalman estimator reset completed\n");
     }
 
     // Tracks whether an update to the state has been made, and the state therefore requires finalization
@@ -475,21 +469,15 @@ void estimatorKalman(state_t *state, sensorData_t *sensors, control_t *control, 
   // Average magnetometer data and apply calibration
   if (sensorsReadMag(&sensors->mag)) {
     Axis3f calibratedMag;
-    if (magCalibration.isCalibrated) {
-      calibratedMag.x = (sensors->mag.x - magCalibration.offsetX) * magCalibration.scaleX;
-      calibratedMag.y = (sensors->mag.y - magCalibration.offsetY) * magCalibration.scaleY;
-      calibratedMag.z = (sensors->mag.z - magCalibration.offsetZ) * magCalibration.scaleZ;
-    } else {
-      calibratedMag = sensors->mag;
-    }
+    calibratedMag = sensors->mag;
+    
+    // Send magnetometer data to Kalman filter queue for yaw correction
+    estimatorKalmanEnqueueMag(&calibratedMag);
     
     magAccumulator.x += calibratedMag.x;
     magAccumulator.y += calibratedMag.y;
     magAccumulator.z += calibratedMag.z;
     magAccumulatorCount++;
-    
-    // Enqueue magnetometer measurement for Kalman update
-    estimatorKalmanEnqueueMag(&calibratedMag);
   }
 
   // Average the thrust command from the last time steps, generated externally by the controller
@@ -507,20 +495,41 @@ void estimatorKalman(state_t *state, sensorData_t *sensors, control_t *control, 
   // Make a copy of sensor data to be used by the task
   memcpy(&gyroSnapshot, &sensors->gyro, sizeof(gyroSnapshot));
   memcpy(&accSnapshot, &sensors->acc, sizeof(accSnapshot));
-  if (magAccumulatorCount > 0) {
-    magSnapshot.x = magAccumulator.x / magAccumulatorCount;
-    magSnapshot.y = magAccumulator.y / magAccumulatorCount;
-    magSnapshot.z = magAccumulator.z / magAccumulatorCount;
-    // Reset magnetometer accumulator
-    magAccumulator = (Axis3f){.axis={0}};
-    magAccumulatorCount = 0;
-  }
+  memcpy(&magSnapshot, &sensors->mag, sizeof(magSnapshot));
 
   // Copy the latest state, calculated by the task
   memcpy(state, &taskEstimatorState, sizeof(state_t));
   xSemaphoreGive(dataMutex);
 
   xSemaphoreGive(runTaskSemaphore);
+}
+
+static void initializeYawFromMagnetometer(void) {
+  if (!useMagYawInit) {
+    DEBUG_PRINT("Magnetometer yaw initialization disabled\n");
+    return;
+  }
+  
+  // Get latest magnetometer and accelerometer data
+  Axis3f mag, acc;
+  
+  xSemaphoreTake(dataMutex, portMAX_DELAY);
+  memcpy(&mag, &magSnapshot, sizeof(mag));
+  memcpy(&acc, &accSnapshot, sizeof(acc));
+  xSemaphoreGive(dataMutex);
+  
+  DEBUG_PRINTI("Reset: Raw mag data: x=%.3f, y=%.3f, z=%.3f\n", mag.x, mag.y, mag.z);
+  DEBUG_PRINTI("Reset: Raw acc data: x=%.3f, y=%.3f, z=%.3f\n", acc.x, acc.y, acc.z);
+  
+  // Calculate heading from magnetometer
+  float magHeading = kalmanCoreGetHeading(&mag, &acc);
+  float magHeadingRad = magHeading * (float)M_PI / 180.0f;
+  
+  // Set the initial yaw parameter to the magnetometer heading
+  kalmanCoreSetInitialYaw(magHeadingRad);
+  
+  DEBUG_PRINTI("Kalman reset: mag heading=%.3f deg (%.6f rad), setting as initial yaw\n", 
+              magHeading, magHeadingRad);
 }
 
 static bool predictStateForward(uint32_t osTick, float dt) {
@@ -544,6 +553,11 @@ static bool predictStateForward(uint32_t osTick, float dt) {
   accAverage.x = accAccumulator.x * GRAVITY_MAGNITUDE / accAccumulatorCount;
   accAverage.y = accAccumulator.y * GRAVITY_MAGNITUDE / accAccumulatorCount;
   accAverage.z = accAccumulator.z * GRAVITY_MAGNITUDE / accAccumulatorCount;
+
+  Axis3f magAverage;
+  magAverage.x = magAccumulator.x / magAccumulatorCount;
+  magAverage.y = magAccumulator.y / magAccumulatorCount;
+  magAverage.z = magAccumulator.z / magAccumulatorCount;
 
   // thrust is in grams, we need ms^-2
   float thrustAverage = thrustAccumulator * CONTROL_TO_ACC / thrustAccumulatorCount;
@@ -569,11 +583,28 @@ static bool predictStateForward(uint32_t osTick, float dt) {
   }
   quadIsFlying = (osTick-lastFlightCmd) < IN_FLIGHT_TIME_THRESHOLD;
 
-  kalmanCorePredict(&coreData, thrustAverage, &accAverage, &gyroAverage, dt, quadIsFlying);
+  kalmanCorePredict(&coreData, thrustAverage, &accAverage, &gyroAverage, &magAverage, dt, quadIsFlying);
 
   return true;
 }
 
+#if 0
+// --- Debug: Magnetometer packet rate logging ---
+static void logMagPacketRate(void)
+{
+  static uint32_t pktcount = 0;
+  static uint32_t lastTick = 0;
+  pktcount++;
+  uint32_t nowTick = xTaskGetTickCount();
+  // Log every 10 seconds (10000 ms)
+  if (nowTick - lastTick >= 10000) {
+    float pps = (float)pktcount / ((nowTick - lastTick) / 1000.0f);
+    DEBUG_PRINTI("Mag packets: %lu in %lu ms (%.2f Hz)\n", pktcount, (unsigned long)(nowTick - lastTick), (double)pps);
+    pktcount = 0;
+    lastTick = nowTick;
+  }
+}
+#endif
 
 static bool updateQueuedMeasurments(const Axis3f *gyro, const uint32_t tick) {
   bool doneUpdate = false;
@@ -638,20 +669,37 @@ static bool updateQueuedMeasurments(const Axis3f *gyro, const uint32_t tick) {
     doneUpdate = true;
   }
 
-  // Process magnetometer measurements for yaw correction
+  // Magnetometer measurements for yaw correction
+  // Process at reduced frequency but with stronger updates
+  static uint32_t magUpdateCounter = 0;
+  static uint32_t lastMagUpdate = 0;
+  
   Axis3f mag;
   while (stateEstimatorHasMagPacket(&mag))
   {
-    kalmanCoreUpdateWithMag(&coreData, &mag);
-    doneUpdate = true;
+    uint32_t currentTick = tick;
+    
+    // Only process if enough cycles have passed AND enough time has elapsed
+    if (++magUpdateCounter >= magUpdateDivider && 
+        (currentTick - lastMagUpdate) >= M2T(minMagUpdateIntervalMs)) {
+      
+      // Use latest accelerometer data for tilt compensation
+      Axis3f acc;
+      xSemaphoreTake(dataMutex, portMAX_DELAY);
+      memcpy(&acc, &accSnapshot, sizeof(acc));
+      xSemaphoreGive(dataMutex);
+      
+      // Only update when drone is relatively stable (allow more movement for better tracking)
+      float accMagnitude = sqrtf(acc.x*acc.x + acc.y*acc.y + acc.z*acc.z);
+      if (accMagnitude > 0.6f && accMagnitude < 1.4f) { // Even more permissive range
+        kalmanCoreUpdateWithMagnetometer(&coreData, &mag, &acc);
+        doneUpdate = true;
+        lastMagUpdate = currentTick;
+      }
+      
+      magUpdateCounter = 0;
+    }
   }
-
-  // sweepAngleMeasurement_t angles;
-  // while (stateEstimatorHasSweepAnglesPacket(&angles))
-  // {
-  //   kalmanCoreUpdateWithSweepAngles(&coreData, &angles, tick);
-  //   doneUpdate = true;
-  // }
 
   return doneUpdate;
 }
@@ -680,6 +728,9 @@ void estimatorKalmanInit(void) {
   baroAccumulatorCount = 0;
   xSemaphoreGive(dataMutex);
 
+  // Initialize yaw from magnetometer before core init
+  initializeYawFromMagnetometer();
+  
   kalmanCoreInit(&coreData);
 }
 
@@ -765,115 +816,6 @@ bool estimatorKalmanEnqueueMag(const Axis3f* mag)
   return appendMeasurement(magDataQueue, (void *)mag);
 }
 
-void estimatorKalmanCalibrateMag(void)
-{
-  static float magMin[3] = {10000.0f, 10000.0f, 10000.0f};
-  static float magMax[3] = {-10000.0f, -10000.0f, -10000.0f};
-
-  DEBUG_PRINTI("Starting magnetometer calibration - rotate drone in all directions for 30 seconds\n");
-
-  uint32_t startTime = xTaskGetTickCount();
-  uint32_t endTime = startTime + M2T(30000); // 30 seconds
-  uint32_t sampleCount = 0;
-  uint32_t attemptCount = 0;
-
-  // Store last magnetometer values to detect new data
-  Axis3f lastMag = { .x = 0.0f, .y = 0.0f, .z = 0.0f};
-
-  // Reset min/max values
-  for (int i = 0; i < 3; i++) {
-    magMin[i] = 10000.0f;
-    magMax[i] = -10000.0f;
-  }
-
-  while (xTaskGetTickCount() < endTime) {
-    attemptCount++;
-
-    // Instead of reading directly, wait for the magnetometer data to be updated
-    // by using the accumulator that's already being filled in estimatorKalman()
-    if (magAccumulatorCount > 0) {
-      xSemaphoreTake(dataMutex, portMAX_DELAY);
-
-      // Get the averaged magnetometer data
-      Axis3f currentMag = { .x = 0.0f, .y = 0.0f, .z = 0.0f };
-      if (magAccumulatorCount > 0) {
-        currentMag.x = magAccumulator.x / magAccumulatorCount;
-        currentMag.y = magAccumulator.y / magAccumulatorCount;
-        currentMag.z = magAccumulator.z / magAccumulatorCount;
-
-        // Reset accumulator for next reading
-        magAccumulator = (Axis3f){.axis={0}};
-        magAccumulatorCount = 0;
-      }
-
-      xSemaphoreGive(dataMutex);
-
-      // Check if this is actually new data
-      if (currentMag.x != lastMag.x || currentMag.y != lastMag.y || currentMag.z != lastMag.z) {
-        float magData[3] = {currentMag.x, currentMag.y, currentMag.z};
-
-        // Check for valid readings
-        float magnitude = sqrtf(magData[0]*magData[0] + magData[1]*magData[1] + magData[2]*magData[2]);
-        if (magnitude > 0.01f && magnitude < 1000.0f) {
-          for (int i = 0; i < 3; i++) {
-            if (magData[i] < magMin[i]) magMin[i] = magData[i];
-            if (magData[i] > magMax[i]) magMax[i] = magData[i];
-          }
-          sampleCount++;
-
-          // Update last values
-          lastMag = currentMag;
-
-          // Debug output every 50 samples
-          if (sampleCount % 50 == 0) {
-            DEBUG_PRINTI("Sample %ld/%ld: X=%.2f Y=%.2f Z=%.2f (mag=%.2f)\n", 
-                       sampleCount, attemptCount, 
-                       (double)magData[0], (double)magData[1], (double)magData[2], 
-                       (double)magnitude);
-          }
-        }
-      }
-    }
-
-    // Wait for magnetometer update rate (typical 15-75Hz, so wait ~20ms)
-    vTaskDelay(M2T(20));
-  }
-
-  DEBUG_PRINTI("Calibration ended: %ld valid samples collected (from %ld attempts)\n", 
-              sampleCount, attemptCount);
-
-  if (sampleCount < 100) {
-    DEBUG_PRINTI("Calibration failed - insufficient samples (%ld)\n", sampleCount);
-    return;
-  }
-
-  // Rest of calibration calculation...
-  magCalibration.offsetX = (magMax[0] + magMin[0]) / 2.0f;
-  magCalibration.offsetY = (magMax[1] + magMin[1]) / 2.0f;
-  magCalibration.offsetZ = (magMax[2] + magMin[2]) / 2.0f;
-
-  float rangeX = magMax[0] - magMin[0];
-  float rangeY = magMax[1] - magMin[1];
-  float rangeZ = magMax[2] - magMin[2];
-
-  if (rangeX < 0.1f || rangeY < 0.1f || rangeZ < 0.1f) {
-    DEBUG_PRINTI("Calibration failed - insufficient movement\n");
-    return;
-  }
-
-  float avgRange = (rangeX + rangeY + rangeZ) / 3.0f;
-  magCalibration.scaleX = avgRange / rangeX;
-  magCalibration.scaleY = avgRange / rangeY;
-  magCalibration.scaleZ = avgRange / rangeZ;
-
-  magCalibration.isCalibrated = true;
-
-  DEBUG_PRINTI("Magnetometer calibration complete!\n");
-  DEBUG_PRINTI("Offsets: X=%.2f Y=%.2f Z=%.2f\n", 
-              (double)magCalibration.offsetX, (double)magCalibration.offsetY, (double)magCalibration.offsetZ);
-  DEBUG_PRINTI("Scales: X=%.2f Y=%.2f Z=%.2f\n", 
-              (double)magCalibration.scaleX, (double)magCalibration.scaleY, (double)magCalibration.scaleZ);
-}  
 // bool estimatorKalmanEnqueueSweepAngles(const sweepAngleMeasurement_t *angles)
 // {
 //   ASSERT(isInit);
@@ -941,6 +883,9 @@ LOG_GROUP_STOP(kalman)
 PARAM_GROUP_START(kalman)
   PARAM_ADD(PARAM_UINT8, resetEstimation, &coreData.resetEstimation)
   PARAM_ADD(PARAM_UINT8, quadIsFlying, &quadIsFlying)
+  PARAM_ADD(PARAM_UINT8, useMagYawInit, &useMagYawInit)
+  PARAM_ADD(PARAM_UINT32, magUpdateDiv, &magUpdateDivider)
+  PARAM_ADD(PARAM_UINT32, magUpdateMs, &minMagUpdateIntervalMs)
 PARAM_GROUP_STOP(kalman)
 
 // Magnetometer logging
@@ -948,21 +893,5 @@ LOG_GROUP_START(mag)
   LOG_ADD(LOG_FLOAT, x, &magSnapshot.x)
   LOG_ADD(LOG_FLOAT, y, &magSnapshot.y)
   LOG_ADD(LOG_FLOAT, z, &magSnapshot.z)
-  LOG_ADD(LOG_UINT8, calibrated, &magCalibration.isCalibrated)
-  LOG_ADD(LOG_FLOAT, offsetX, &magCalibration.offsetX)
-  LOG_ADD(LOG_FLOAT, offsetY, &magCalibration.offsetY)
-  LOG_ADD(LOG_FLOAT, offsetZ, &magCalibration.offsetZ)
 LOG_GROUP_STOP(mag)
 
-// Magnetometer parameters
-PARAM_GROUP_START(mag)
-  PARAM_ADD(PARAM_FLOAT, declination, &magCalibration.declination)
-  PARAM_ADD(PARAM_UINT8, calibrated, &magCalibration.isCalibrated)
-  PARAM_ADD(PARAM_UINT8, calibrate, &triggerMagCalibration)
-  PARAM_ADD(PARAM_FLOAT, offsetX, &magCalibration.offsetX)
-  PARAM_ADD(PARAM_FLOAT, offsetY, &magCalibration.offsetY)
-  PARAM_ADD(PARAM_FLOAT, offsetZ, &magCalibration.offsetZ)
-  PARAM_ADD(PARAM_FLOAT, scaleX, &magCalibration.scaleX)
-  PARAM_ADD(PARAM_FLOAT, scaleY, &magCalibration.scaleY)
-  PARAM_ADD(PARAM_FLOAT, scaleZ, &magCalibration.scaleZ)
-PARAM_GROUP_STOP(mag)

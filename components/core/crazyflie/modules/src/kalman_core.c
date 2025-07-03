@@ -57,6 +57,13 @@
 
 #include "kalman_core.h"
 #include "cfassert.h"
+#include "mag_utils.h"
+
+#define DEBUG_MODULE "KALMAN"
+#include "debug_cf.h"
+
+#define DEBUG_MODULE "KALMAN"
+#include "debug_cf.h"
 
 #include "outlierFilter.h"
 #include "physicalConstants.h"
@@ -141,6 +148,9 @@ static float measNoiseBaro = 2.0f; // meters
 static float measNoiseGyro_rollpitch = 0.1f; // radians per second
 static float measNoiseGyro_yaw = 0.1f; // radians per second
 
+// Magnetometer parameters
+static float magStdDev = 1.0f; // Standard deviation for magnetometer measurement in degrees (more aggressive for better tracking)
+
 static float initialX = 0.0;
 static float initialY = 0.0;
 static float initialZ = 0.0;
@@ -151,10 +161,7 @@ static float initialZ = 0.0;
 // PI --- facing negative X
 // 3 * PI / 2 --- facing negative Y
 static float initialYaw = 0.0;
-
-// Magnetometer parameters
-static float magNoiseMag = 0.05f; // Magnetometer measurement noise
-static float magDeclination = 0.0f; // Magnetic declination in radians
+static float currentYawDeg = 0.0; // current Yaw in Degrees
 
 // Quaternion used for initial yaw
 static float initialQuaternion[4] = {0.0, 0.0, 0.0, 0.0};
@@ -568,49 +575,50 @@ void kalmanCoreUpdateWithYawError(kalmanCoreData_t *this, yawErrorMeasurement_t 
     scalarUpdate(this, &H, this->S[KC_STATE_D2] - error->yawError, error->stdDev);
 }
 
-void kalmanCoreUpdateWithMag(kalmanCoreData_t *this, const Axis3f *mag)
-{
-    // Only update if magnetometer readings are valid
-    float magNorm = sqrtf(mag->x * mag->x + mag->y * mag->y + mag->z * mag->z);
-    if (magNorm < 0.1f || magNorm > 1000.0f) {
-        return; // Invalid reading
-    }
+float kalmanCoreGetHeading(const Axis3f *mag, const Axis3f *acc) {
+    // Note: This function receives already-transformed magnetometer data from the sensor driver
+    // The sensor driver has already applied the mounting angle transformation
+    // So we only need to do tilt compensation here
+    
+    // Calculate pitch and roll (in radians)
+    float roll = atan2f(acc->y, acc->z);
+    float pitch = atan2f(-acc->x, sqrtf(acc->y * acc->y + acc->z * acc->z));
 
-    // Get current attitude from quaternion
-    float roll = atan2f(2.0f * (this->q[0] * this->q[1] + this->q[2] * this->q[3]), 
-                        1.0f - 2.0f * (this->q[1] * this->q[1] + this->q[2] * this->q[2]));
-    float pitch = asinf(2.0f * (this->q[0] * this->q[2] - this->q[3] * this->q[1]));
+    // Tilt compensation using already-transformed magnetometer values
+    float Xh = mag->x * cosf(pitch) + mag->z * sinf(pitch);
+    float Yh = mag->x * sinf(roll) * sinf(pitch) + mag->y * cosf(roll) - mag->z * sinf(roll) * cosf(pitch);
+
+    float headingRad = atan2f(Yh, Xh);
+    float headingDeg = headingRad * 180.0f / (float)M_PI;
     
-    // Tilt compensated magnetometer readings
-    float mx = mag->x * cosf(pitch) + mag->z * sinf(pitch);
-    float my = mag->x * sinf(roll) * sinf(pitch) + mag->y * cosf(roll) - mag->z * sinf(roll) * cosf(pitch);
-    
-    // Calculate magnetic heading
-    float magHeading = atan2f(-my, mx);
-    
-    // Add magnetic declination (set via parameter)
-    magHeading += magDeclination;
+    return headingDeg;
+}
+
+void kalmanCoreUpdateWithMagnetometer(kalmanCoreData_t *this, const Axis3f *mag, const Axis3f *acc)
+{
+    // Calculate heading from magnetometer with tilt compensation (no mounting angle - already applied by sensor driver)
+    float magHeading = kalmanCoreGetHeading(mag, acc);
     
     // Get current yaw from quaternion
     float currentYaw = atan2f(2.0f * (this->q[0] * this->q[3] + this->q[1] * this->q[2]), 
-                              1.0f - 2.0f * (this->q[2] * this->q[2] + this->q[3] * this->q[3]));
+                             1.0f - 2.0f * (this->q[2] * this->q[2] + this->q[3] * this->q[3]));
+    currentYaw = currentYaw * 180.0f / (float)M_PI; // Convert to degrees
     
-    // Calculate yaw error
+    // Calculate yaw error (handle wrap-around)
     float yawError = magHeading - currentYaw;
+    while (yawError > 180.0f) yawError -= 360.0f;
+    while (yawError < -180.0f) yawError += 360.0f;
     
-    // Normalize to [-pi, pi]
-    while (yawError > M_PI) yawError -= 2.0f * M_PI;
-    while (yawError < -M_PI) yawError += 2.0f * M_PI;
+    // Convert back to radians for the update
+    yawError = yawError * (float)M_PI / 180.0f;
     
-    // Create measurement update for yaw (D2 state)
+    // Update using yaw error measurement
     float h[KC_STATE_DIM] = {0};
     xtensa_matrix_instance_f32 H = {1, KC_STATE_DIM, h};
-    h[KC_STATE_D2] = 1.0f;
     
-    // Apply update with low noise to make it trust compass more than gyro
-    scalarUpdate(this, &H, yawError, magNoiseMag);
+    h[KC_STATE_D2] = 1; // Yaw error affects D2 (attitude error in Z)
+    scalarUpdate(this, &H, yawError, magStdDev * (float)M_PI / 180.0f); // Convert stddev to radians
 }
-
 
 //void kalmanCoreUpdateWithSweepAngles(kalmanCoreData_t *this, sweepAngleMeasurement_t *sweepInfo, const uint32_t tick) {
   // Rotate the sensor position from CF reference frame to global reference frame,
@@ -678,7 +686,7 @@ void kalmanCoreUpdateWithMag(kalmanCoreData_t *this, const Axis3f *mag)
   // }
 //}
 
-void kalmanCorePredict(kalmanCoreData_t* this, float cmdThrust, Axis3f *acc, Axis3f *gyro, float dt, bool quadIsFlying)
+void kalmanCorePredict(kalmanCoreData_t* this, float cmdThrust, Axis3f *acc, Axis3f *gyro, Axis3f *mag, float dt, bool quadIsFlying)
 {
   /* Here we discretize (euler forward) and linearise the quadrocopter dynamics in order
    * to push the covariance forward.
@@ -700,7 +708,7 @@ void kalmanCorePredict(kalmanCoreData_t* this, float cmdThrust, Axis3f *acc, Axi
    * note that d (attitude error) is zero at the beginning of each iteration,
    * since error information is incorporated into R after each Kalman update.
    */
-
+  
   // The linearized update matrix
   NO_DMA_CCM_SAFE_ZERO_INIT static float A[KC_STATE_DIM][KC_STATE_DIM];
   static __attribute__((aligned(4))) xtensa_matrix_instance_f32 Am = { KC_STATE_DIM, KC_STATE_DIM, (float *)A}; // linearized dynamics for covariance update;
@@ -1143,12 +1151,18 @@ void kalmanCoreDecoupleXY(kalmanCoreData_t* this)
   decoupleState(this, KC_STATE_PY);
 }
 
+void kalmanCoreSetInitialYaw(float yawRadians)
+{
+  initialYaw = yawRadians;
+}
+
 // Stock log groups
 LOG_GROUP_START(kalman_pred)
   LOG_ADD(LOG_FLOAT, predNX, &predictedNX)
   LOG_ADD(LOG_FLOAT, predNY, &predictedNY)
   LOG_ADD(LOG_FLOAT, measNX, &measuredNX)
   LOG_ADD(LOG_FLOAT, measNY, &measuredNY)
+  LOG_ADD(LOG_FLOAT, currentYaw, &currentYawDeg)
 LOG_GROUP_STOP(kalman_pred)
 
 LOG_GROUP_START(outlierf)
@@ -1164,10 +1178,9 @@ PARAM_GROUP_START(kalman)
   PARAM_ADD(PARAM_FLOAT, mNBaro, &measNoiseBaro)
   PARAM_ADD(PARAM_FLOAT, mNGyro_rollpitch, &measNoiseGyro_rollpitch)
   PARAM_ADD(PARAM_FLOAT, mNGyro_yaw, &measNoiseGyro_yaw)
-  PARAM_ADD(PARAM_FLOAT, mNMag, &magNoiseMag)
-  PARAM_ADD(PARAM_FLOAT, magDeclination, &magDeclination)
   PARAM_ADD(PARAM_FLOAT, initialX, &initialX)
   PARAM_ADD(PARAM_FLOAT, initialY, &initialY)
   PARAM_ADD(PARAM_FLOAT, initialZ, &initialZ)
   PARAM_ADD(PARAM_FLOAT, initialYaw, &initialYaw)
+  PARAM_ADD(PARAM_FLOAT, magStdDev, &magStdDev)
 PARAM_GROUP_STOP(kalman)
